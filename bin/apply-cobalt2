@@ -112,10 +112,16 @@ def write_config(new_text: str) -> None:
 
 def update_theme_block(theme_block: str) -> bool:
     old = HERDR_CONFIG.read_text() if HERDR_CONFIG.exists() else ""
+    # Keep exactly one trailing newline on the block; a blank separator is
+    # included in render_theme_block() as an extra blank line before EOF of
+    # the section (so the next [section] stays separated).
+    block = theme_block if theme_block.endswith("\n\n") else (
+        theme_block.rstrip("\n") + "\n\n"
+    )
     if THEME_SECTION_RE.search(old):
-        new = THEME_SECTION_RE.sub(theme_block.rstrip("\n") + "\n", old, count=1)
+        new = THEME_SECTION_RE.sub(block, old, count=1)
     else:
-        new = theme_block + ("\n" + old if old.strip() else "")
+        new = block + (old if old.strip() else "")
     if new == old:
         return False
     write_config(new)

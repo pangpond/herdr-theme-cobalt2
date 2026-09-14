@@ -1,6 +1,6 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.1.1"
+version = "0.1.2"
 min_herdr_version = "0.8.0"
 description = "Apply Wes Bos Cobalt2 colors to Herdr's UI via [theme.custom]."
 platforms = ["macos", "linux"]
