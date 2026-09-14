@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Apply or restore the Cobalt2 Herdr UI theme.
+
+Palette adapted for Herdr from Wes Bos Cobalt2 for iTerm2:
+https://github.com/wesbos/cobalt2-iterm
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+from pathlib import Path
+
+HOME = Path.home()
+HERDR_CONFIG = Path(os.environ.get("HERDR_CONFIG_PATH", HOME / ".config/herdr/config.toml"))
+PLUGIN_STATE = Path(
+    os.environ.get(
+        "HERDR_PLUGIN_STATE_DIR",
+        HOME / ".config/herdr/plugins/state/herdr-theme-cobalt2",
+    )
+)
+BACKUP_PATH = PLUGIN_STATE / "theme-block.bak.toml"
+
+# Replace [theme] through nested [theme.*] until the next unrelated section.
+THEME_SECTION_RE = re.compile(
+    r"(?ms)^\[theme\]\n.*?(?=^\[(?!theme(?:\.|\]))[^\]]+\]\n|\Z)"
+)
+
+BASE_THEME = "one-dark"
+
+# Tuned for Herdr chrome contrast (sidebar labels use overlay*/subtext).
+# Signature yellow/blue/pink come from Cobalt2; deeper navy backgrounds keep
+# the UI readable in Herdr's sidebar.
+CUSTOM = {
+    "accent": "#ffc600",
+    "panel_bg": "reset",
+    "sidebar_bg": "#0a1824",
+    "active_row_bg": "#004080",
+    "selection_bg": "#152f45",
+    "surface0": "#122738",
+    "surface1": "#193549",
+    "surface_dim": "#071018",
+    "overlay0": "#6b95b0",
+    "overlay1": "#9effff",
+    "text": "#ffffff",
+    "subtext0": "#b8d4e6",
+    "mauve": "#fb94ff",
+    "green": "#3ad900",
+    "yellow": "#ffc600",
+    "red": "#ff628c",
+    "blue": "#0088ff",
+    "teal": "#80fcff",
+    "peach": "#ff9d00",
+}
+
+TOKEN_ORDER = [
+    "accent",
+    "panel_bg",
+    "sidebar_bg",
+    "active_row_bg",
+    "selection_bg",
+    "surface0",
+    "surface1",
+    "surface_dim",
+    "overlay0",
+    "overlay1",
+    "text",
+    "subtext0",
+    "mauve",
+    "green",
+    "yellow",
+    "red",
+    "blue",
+    "teal",
+    "peach",
+]
+
+
+def herdr_bin() -> str:
+    return os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def render_theme_block() -> str:
+    lines = [
+        "[theme]",
+        "# Managed by Herdr plugin: herdr-theme-cobalt2",
+        "# Palette adapted from Wes Bos Cobalt2 for iTerm2:",
+        "# https://github.com/wesbos/cobalt2-iterm",
+        f'name = "{BASE_THEME}"',
+        "auto_switch = false",
+        "",
+        "[theme.custom]",
+    ]
+    for key in TOKEN_ORDER:
+        lines.append(f'{key} = "{CUSTOM[key]}"')
+    return "\n".join(lines) + "\n"
+
+
+def extract_theme_block(text: str) -> str | None:
+    match = THEME_SECTION_RE.search(text)
+    return match.group(0) if match else None
+
+
+def write_config(new_text: str) -> None:
+    HERDR_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HERDR_CONFIG.with_suffix(HERDR_CONFIG.suffix + ".tmp")
+    tmp.write_text(new_text)
+    tmp.replace(HERDR_CONFIG)
+
+
+def update_theme_block(theme_block: str) -> bool:
+    old = HERDR_CONFIG.read_text() if HERDR_CONFIG.exists() else ""
+    if THEME_SECTION_RE.search(old):
+        new = THEME_SECTION_RE.sub(theme_block.rstrip("\n") + "\n", old, count=1)
+    else:
+        new = theme_block + ("\n" + old if old.strip() else "")
+    if new == old:
+        return False
+    write_config(new)
+    return True
+
+
+def backup_current_theme() -> None:
+    if not HERDR_CONFIG.exists():
+        return
+    block = extract_theme_block(HERDR_CONFIG.read_text())
+    if not block:
+        return
+    PLUGIN_STATE.mkdir(parents=True, exist_ok=True)
+    BACKUP_PATH.write_text(block if block.endswith("\n") else block + "\n")
+
+
+def validate_config() -> None:
+    result = subprocess.run(
+        [herdr_bin(), "config", "check"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "herdr config check failed after write; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+
+def reload_herdr() -> None:
+    sock = Path(os.environ.get("HERDR_SOCKET_PATH", HOME / ".config/herdr/herdr.sock"))
+    if sock.exists():
+        subprocess.run(
+            [herdr_bin(), "server", "reload-config"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def notify(message: str) -> None:
+    subprocess.run(
+        [herdr_bin(), "notification", "show", message],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def apply_theme() -> str:
+    backup_current_theme()
+    changed = update_theme_block(render_theme_block())
+    validate_config()
+    if changed:
+        reload_herdr()
+        return "Cobalt2 theme applied"
+    return "Cobalt2 theme already applied"
+
+
+def restore_theme() -> str:
+    if not BACKUP_PATH.is_file():
+        raise SystemExit(f"No theme backup found at {BACKUP_PATH}")
+    changed = update_theme_block(BACKUP_PATH.read_text())
+    validate_config()
+    if changed:
+        reload_herdr()
+        return "Previous Herdr theme restored"
+    return "Herdr theme already matches the backup"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--apply", action="store_true", help="apply Cobalt2 theme")
+    group.add_argument("--restore", action="store_true", help="restore backed-up theme")
+    parser.add_argument("--notify", action="store_true", help="show a Herdr notification")
+    args = parser.parse_args()
+
+    message = apply_theme() if args.apply else restore_theme()
+    print(message)
+    if args.notify:
+        notify(message)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

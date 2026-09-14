@@ -1,0 +1,26 @@
+id = "herdr-theme-cobalt2"
+name = "Cobalt2 Theme"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Apply Wes Bos Cobalt2 colors to Herdr's UI via [theme.custom]."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "apply"
+title = "Apply Cobalt2 theme"
+description = "Write Cobalt2 [theme.custom] colors into config.toml and reload Herdr."
+contexts = ["global", "workspace"]
+command = ["python3", "bin/apply-cobalt2", "--apply", "--notify"]
+
+[[actions]]
+id = "restore"
+title = "Restore previous theme"
+description = "Restore the [theme] block backed up before the last Cobalt2 apply."
+contexts = ["global", "workspace"]
+command = ["python3", "bin/apply-cobalt2", "--restore", "--notify"]
+
+[[keys.command]]
+key = "prefix+shift+c"
+type = "plugin_action"
+command = "herdr-theme-cobalt2.apply"
+description = "apply Cobalt2 theme"
