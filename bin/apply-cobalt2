@@ -10,7 +10,12 @@ import argparse
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import cobalt2_marks  # noqa: E402
 
 HOME = Path.home()
 HERDR_CONFIG = Path(os.environ.get("HERDR_CONFIG_PATH", HOME / ".config/herdr/config.toml"))
@@ -20,12 +25,20 @@ PLUGIN_STATE = Path(
         HOME / ".config/herdr/plugins/state/herdr-theme-cobalt2",
     )
 )
-BACKUP_PATH = PLUGIN_STATE / "theme-block.bak.toml"
+THEME_BACKUP = PLUGIN_STATE / "theme-block.bak.toml"
+SIDEBAR_BACKUP = PLUGIN_STATE / "sidebar-agents-block.bak.toml"
 
 # Replace [theme] through nested [theme.*] until the next unrelated section.
-THEME_SECTION_RE = re.compile(
-    r"(?ms)^\[theme\]\n.*?(?=^\[(?!theme(?:\.|\]))[^\]]+\]\n|\Z)"
+THEME_SECTION_RE = re.compile(r"(?ms)^\[theme\]\n.*?(?=^\[(?!theme(?:\.|\]))[^\]]+\]\n|\Z)")
+
+# Same idea for the Agent sidebar rows, which may be followed by an array of
+# tables such as [[keys.command]].
+SIDEBAR_SECTION_RE = re.compile(
+    r"(?ms)^\[ui\.sidebar\.agents\]\n.*?"
+    r"(?=^\[\[|^\[(?!ui\.sidebar\.agents(?:\.|\]))[^\]]+\]\n|\Z)"
 )
+
+MANAGED_BY = "# Managed by Herdr plugin: herdr-theme-cobalt2"
 
 BASE_THEME = "one-dark"
 
@@ -35,16 +48,16 @@ BASE_THEME = "one-dark"
 CUSTOM = {
     "accent": "#ffc600",
     "panel_bg": "reset",
-    "sidebar_bg": "#0a1824",
-    "active_row_bg": "#004080",
+    "sidebar_bg": "#011627",
+    "active_row_bg": "#193549",
     "selection_bg": "#152f45",
     "surface0": "#122738",
     "surface1": "#193549",
     "surface_dim": "#071018",
-    "overlay0": "#6b95b0",
+    "overlay0": "#82a7bd",
     "overlay1": "#9effff",
     "text": "#ffffff",
-    "subtext0": "#b8d4e6",
+    "subtext0": "#d6deeb",
     "mauve": "#fb94ff",
     "green": "#3ad900",
     "yellow": "#ffc600",
@@ -76,6 +89,18 @@ TOKEN_ORDER = [
     "peach",
 ]
 
+# Rows after the first assume the Agent Usage (usagebar) plugin. Herdr hides
+# tokens nobody reports, so these rows simply collapse when it is absent.
+SIDEBAR_TAIL_ROWS = [
+    '[{ token = "$provider", fg = "#9effff" }, { token = "$limit", fg = "#d6deeb" }]',
+    (
+        '[{ token = "$cache_high", fg = "#3ad900" }, '
+        '{ token = "$cache_mid", fg = "#ffc600" }, '
+        '{ token = "$cache_low", fg = "#ff628c" }]'
+    ),
+    '[{ token = "$context", fg = "#82a7bd" }]',
+]
+
 
 def herdr_bin() -> str:
     return os.environ.get("HERDR_BIN_PATH") or "herdr"
@@ -84,7 +109,7 @@ def herdr_bin() -> str:
 def render_theme_block() -> str:
     lines = [
         "[theme]",
-        "# Managed by Herdr plugin: herdr-theme-cobalt2",
+        MANAGED_BY,
         "# Palette adapted from Wes Bos Cobalt2 for iTerm2:",
         "# https://github.com/wesbos/cobalt2-iterm",
         f'name = "{BASE_THEME}"',
@@ -98,57 +123,138 @@ def render_theme_block() -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def extract_theme_block(text: str) -> str | None:
-    match = THEME_SECTION_RE.search(text)
+def render_logo_token_lines() -> list[str]:
+    """The $cobalt2_logo entry, colored per harness with styling rules.
+
+    Rules match the token's reported value, which is the mark itself, so one
+    rule covers every agent sharing a mark. Marks colored with the accent need
+    no rule at all, which is what keeps this inside Herdr's ceiling of 16 rules
+    per token.
+    """
+    rules = cobalt2_marks.rule_specs()
+    budget = cobalt2_marks.MAX_STYLE_RULES - cobalt2_marks.RULE_HEADROOM
+    if len(rules) > budget:
+        raise SystemExit(
+            f"apply-cobalt2: {len(rules)} styling rules exceeds the {budget} this plugin "
+            f"budgets out of Herdr's limit of {cobalt2_marks.MAX_STYLE_RULES}. Give "
+            f"another mark the accent color in lib/cobalt2_marks.py."
+        )
+    # The rules array is broken across lines, which TOML permits inside an
+    # inline table because the newlines fall within an array value.
+    return [
+        f'{{ token = "$cobalt2_logo", fg = "{cobalt2_marks.ACCENT}", bold = true, rules = [',
+        *(f'      {{ equals = "\\u{cp:04X}", fg = "{color}" }},' for cp, color in rules),
+        "    ] }",
+    ]
+
+
+def render_sidebar_block() -> str:
+    logo = render_logo_token_lines()
+    first_row = [
+        f'  ["state_icon", {logo[0]}',
+        *logo[1:-1],
+        f'{logo[-1]}, {{ token = "$title", fg = "#d6deeb" }}],',
+    ]
+    lines = [
+        "[ui.sidebar.agents]",
+        MANAGED_BY,
+        "# $cobalt2_logo is reported by bin/agent-marks in this plugin.",
+        "row_gap = 0",
+        "rows = [",
+        *first_row,
+        *(f"  {row}," for row in SIDEBAR_TAIL_ROWS),
+        "]",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
+def extract_section(text: str, pattern: re.Pattern[str]) -> str | None:
+    match = pattern.search(text)
     return match.group(0) if match else None
 
 
-def write_config(new_text: str) -> None:
-    HERDR_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HERDR_CONFIG.with_suffix(HERDR_CONFIG.suffix + ".tmp")
-    tmp.write_text(new_text)
-    tmp.replace(HERDR_CONFIG)
+def update_section(text: str, pattern: re.Pattern[str], block: str) -> str:
+    # Keep exactly one blank separator after the block, so the next [section]
+    # stays visually separated however the block was rendered.
+    normalized = block if block.endswith("\n\n") or not block.strip() else block.rstrip("\n") + "\n\n"
+    if pattern.search(text):
+        # A function replacement, because the block contains \uXXXX escapes that
+        # re.sub would otherwise try to interpret as template escapes.
+        return pattern.sub(lambda _: normalized, text, count=1)
+    return normalized + (text if text.strip() else "")
 
 
-def update_theme_block(theme_block: str) -> bool:
-    old = HERDR_CONFIG.read_text() if HERDR_CONFIG.exists() else ""
-    # Keep exactly one trailing newline on the block; a blank separator is
-    # included in render_theme_block() as an extra blank line before EOF of
-    # the section (so the next [section] stays separated).
-    block = theme_block if theme_block.endswith("\n\n") else (
-        theme_block.rstrip("\n") + "\n\n"
-    )
-    if THEME_SECTION_RE.search(old):
-        new = THEME_SECTION_RE.sub(block, old, count=1)
-    else:
-        new = block + (old if old.strip() else "")
-    if new == old:
-        return False
-    write_config(new)
-    return True
+def check_config(path: Path) -> tuple[bool, str]:
+    """Run `herdr config check` against one config file.
 
-
-def backup_current_theme() -> None:
-    if not HERDR_CONFIG.exists():
-        return
-    block = extract_theme_block(HERDR_CONFIG.read_text())
-    if not block:
-        return
-    PLUGIN_STATE.mkdir(parents=True, exist_ok=True)
-    BACKUP_PATH.write_text(block if block.endswith("\n") else block + "\n")
-
-
-def validate_config() -> None:
+    The checker honors HERDR_CONFIG_PATH, so a candidate can be validated while
+    the live config is still untouched.
+    """
     result = subprocess.run(
         [herdr_bin(), "config", "check"],
         capture_output=True,
         text=True,
+        env={**os.environ, "HERDR_CONFIG_PATH": str(path)},
     )
-    if result.returncode != 0:
-        raise SystemExit(
-            "herdr config check failed after write; "
-            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    report = f"{result.stdout}{result.stderr}".strip()
+    return result.returncode == 0 and "issues found" not in report, report
+
+
+def validate_candidate(text: str) -> None:
+    """Refuse to write a candidate that breaks a config which currently works.
+
+    Issues the config already had are reported but not treated as ours, so an
+    unrelated problem elsewhere in config.toml cannot block applying the theme.
+    """
+    candidate = HERDR_CONFIG.with_name(HERDR_CONFIG.name + ".candidate")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text(text)
+    try:
+        candidate_ok, report = check_config(candidate)
+        if candidate_ok:
+            return
+        baseline_ok = not HERDR_CONFIG.exists() or check_config(HERDR_CONFIG)[0]
+        if baseline_ok:
+            raise SystemExit(
+                "apply-cobalt2: refusing to write, the rendered config does not "
+                f"validate.\n{report}"
+            )
+        print(
+            f"apply-cobalt2: config.toml already had issues; writing anyway.\n{report}",
+            file=sys.stderr,
         )
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def commit(blocks: list[tuple[re.Pattern[str], str]]) -> bool:
+    old = HERDR_CONFIG.read_text() if HERDR_CONFIG.exists() else ""
+    new = old
+    for pattern, block in blocks:
+        new = update_section(new, pattern, block)
+    if new == old:
+        return False
+    validate_candidate(new)
+    tmp = HERDR_CONFIG.with_suffix(HERDR_CONFIG.suffix + ".tmp")
+    tmp.write_text(new)
+    tmp.replace(HERDR_CONFIG)
+    return True
+
+
+def backup_current() -> None:
+    if not HERDR_CONFIG.exists():
+        return
+    text = HERDR_CONFIG.read_text()
+    PLUGIN_STATE.mkdir(parents=True, exist_ok=True)
+    for pattern, path in ((THEME_SECTION_RE, THEME_BACKUP), (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP)):
+        block = extract_section(text, pattern)
+        if block is not None and MANAGED_BY in block:
+            # Already our own output. Re-applying must not overwrite the user's
+            # original with it, or --restore would just reinstate Cobalt2.
+            continue
+        # An empty backup records "this section did not exist", which restore
+        # needs in order to tell that apart from "never backed up".
+        path.write_text("" if block is None else block.rstrip("\n") + "\n")
 
 
 def reload_herdr() -> None:
@@ -161,6 +267,19 @@ def reload_herdr() -> None:
         )
 
 
+def refresh_marks() -> None:
+    """Report $cobalt2_logo for panes that already exist.
+
+    Without this, marks would only appear on the next pane.agent_detected event.
+    """
+    script = Path(__file__).resolve().parent / "agent-marks"
+    subprocess.run(
+        [sys.executable, str(script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def notify(message: str) -> None:
     subprocess.run(
         [herdr_bin(), "notification", "show", message],
@@ -170,9 +289,14 @@ def notify(message: str) -> None:
 
 
 def apply_theme() -> str:
-    backup_current_theme()
-    changed = update_theme_block(render_theme_block())
-    validate_config()
+    backup_current()
+    changed = commit(
+        [
+            (THEME_SECTION_RE, render_theme_block()),
+            (SIDEBAR_SECTION_RE, render_sidebar_block()),
+        ]
+    )
+    refresh_marks()
     if changed:
         reload_herdr()
         return "Cobalt2 theme applied"
@@ -180,10 +304,17 @@ def apply_theme() -> str:
 
 
 def restore_theme() -> str:
-    if not BACKUP_PATH.is_file():
-        raise SystemExit(f"No theme backup found at {BACKUP_PATH}")
-    changed = update_theme_block(BACKUP_PATH.read_text())
-    validate_config()
+    if not THEME_BACKUP.is_file():
+        raise SystemExit(f"No theme backup found at {THEME_BACKUP}")
+    blocks = [
+        (pattern, path.read_text())
+        for pattern, path in (
+            (THEME_SECTION_RE, THEME_BACKUP),
+            (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP),
+        )
+        if path.is_file()
+    ]
+    changed = commit(blocks)
     if changed:
         reload_herdr()
         return "Previous Herdr theme restored"

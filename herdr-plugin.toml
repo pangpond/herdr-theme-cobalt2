@@ -1,23 +1,47 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.1.2"
-min_herdr_version = "0.8.0"
-description = "Apply Wes Bos Cobalt2 colors to Herdr's UI via [theme.custom]."
+version = "0.2.0"
+# Agent row styling rules were verified against 0.9.0.
+min_herdr_version = "0.9.0"
+description = "Apply Wes Bos Cobalt2 colors to Herdr's UI, with a sized harness mark on every agent row."
 platforms = ["macos", "linux"]
+
+# Report $cobalt2_logo for panes that already exist when Herdr starts, then for
+# each pane as its harness is detected.
+[[startup]]
+command = ["python3", "bin/agent-marks"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "bin/agent-marks"]
 
 [[actions]]
 id = "apply"
 title = "Apply Cobalt2 theme"
-description = "Write Cobalt2 [theme.custom] colors into config.toml and reload Herdr."
+description = "Write Cobalt2 [theme.custom] colors and Agent sidebar rows into config.toml, then reload Herdr."
 contexts = ["global", "workspace"]
 command = ["python3", "bin/apply-cobalt2", "--apply", "--notify"]
 
 [[actions]]
 id = "restore"
 title = "Restore previous theme"
-description = "Restore the [theme] block backed up before the last Cobalt2 apply."
+description = "Restore the [theme] and [ui.sidebar.agents] blocks backed up before the first Cobalt2 apply."
 contexts = ["global", "workspace"]
 command = ["python3", "bin/apply-cobalt2", "--restore", "--notify"]
+
+[[actions]]
+id = "refresh-marks"
+title = "Agent marks: refresh"
+description = "Re-report the harness mark for every current pane."
+contexts = ["global"]
+command = ["python3", "bin/agent-marks"]
+
+[[actions]]
+id = "scale-fonts"
+title = "Agent marks: resize for this terminal"
+description = "Rebuild the harness logo font so marks match the size of sidebar text. Restart the terminal afterwards."
+contexts = ["global"]
+command = ["python3", "bin/scale-agent-fonts"]
 
 [[keys.command]]
 key = "prefix+shift+c"

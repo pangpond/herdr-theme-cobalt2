@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""Resize the harness logo glyphs so they match the size of sidebar text.
+
+Two terminals need two different fixes, because they resolve fonts differently.
+
+Ghostty (`--terminal ghostty`)
+    Ghostty maps U+E1A0-U+E1A8 to "Herdr Harness Logos" via font-codepoint-map,
+    then constrains the glyph before drawing. Those codepoints are absent from
+    Ghostty's Nerd Font attribute table, so `getConstraint` returns null and the
+    renderer falls back to `if (isSymbol(cp)) .{ .size = .fit }`. Private use
+    codepoints are symbols, and `.fit`'s scale factor is
+    `@min(1, width_factor, height_factor)`: that leading 1 means `.fit` only
+    ever scales *down*. Ghostty will never enlarge an undersized mark, so the
+    rendered size is whatever the font ships. Growing the outlines is the only
+    lever, and the constraint box is the ceiling.
+
+    That box is two cells wide, not one: `constraintWidth` grants a symbol two
+    cells when the next cell is blank and the previous cell is not itself a
+    symbol. The sidebar rows written by bin/apply-cobalt2 put a space after the
+    mark, so it qualifies.
+
+iTerm2 (`--terminal iterm2`)
+    iTerm2 renders the whole grid from one font and has no per-codepoint map, so
+    the marks have to live inside the primary family. This builds
+    "MesloLGS NF Herdr" from the pristine MesloLGS NF faces.
+
+    The harness font is 1000 units/em against Meslo's 2048, so outlines are
+    scaled, not copied; copying verbatim renders every mark at 48.8% of its
+    intended size. MesloLGS NF also predates the Nerd Font codicon expansion
+    and is missing several of the borrowed marks, so those are merged in from a
+    donor Nerd Font too.
+
+Marks are scaled uniformly rather than each stretched to a common height, so
+their designed relative weights survive.
+
+Always rebuilt from pristine sources, so re-running is idempotent, and output is
+byte-reproducible.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+
+import cobalt2_marks  # noqa: E402
+
+FONTTOOLS_PIN = "fonttools==4.65.0"
+AGENT_ICONS_PLUGIN_ID = "moneycaringcoder.agent-icons"
+HARNESS_FONT_FILE = "HerdrHarnessLogos-Regular.ttf"
+ITERM_BASE_FAMILY = "MesloLGS NF"
+ITERM_FAMILY_SUFFIX = "Herdr"
+ITERM_FACES = (("Regular", "Regular"), ("Bold", "Bold"), ("Italic", "Italic"), ("Bold Italic", "Bold Italic"))
+WINDOWS_PLATFORM = (3, 1)
+MAC_PLATFORM = (1, 0)
+
+
+def die(message: str) -> None:
+    raise SystemExit(f"scale-agent-fonts: {message}")
+
+
+def state_dir() -> Path:
+    configured = os.environ.get("HERDR_PLUGIN_STATE_DIR")
+    if configured:
+        return Path(configured)
+    return Path.home() / ".config/herdr/plugins/state/herdr-theme-cobalt2"
+
+
+def ensure_fonttools() -> None:
+    """Re-exec inside a plugin-owned venv when fontTools is unavailable.
+
+    Herdr invokes plugin commands with a bare `python3` and a minimal PATH, so
+    the dependency cannot be assumed. The venv lives under the plugin state
+    directory to keep the plugin checkout clean.
+    """
+    try:
+        import fontTools  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        return
+
+    venv = state_dir() / "fonttools-venv"
+    python = venv / "bin" / "python"
+    if not python.is_file():
+        print(f"bootstrapping {FONTTOOLS_PIN} into {venv}", file=sys.stderr)
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+        subprocess.run([str(python), "-m", "pip", "install", "--quiet", FONTTOOLS_PIN], check=True)
+    os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+ensure_fonttools()
+
+from fontTools.misc.transform import Transform  # noqa: E402
+from fontTools.pens.recordingPen import RecordingPen  # noqa: E402
+from fontTools.pens.transformPen import TransformPen  # noqa: E402
+from fontTools.pens.ttGlyphPen import TTGlyphPen  # noqa: E402
+from fontTools.ttLib import TTFont  # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# Shared geometry helpers
+# --------------------------------------------------------------------------
+
+
+def outline_bounds(pen: RecordingPen) -> tuple[float, float, float, float]:
+    xs: list[float] = []
+    ys: list[float] = []
+    for _, args in pen.value:
+        for arg in args:
+            if isinstance(arg, tuple) and len(arg) == 2 and all(
+                isinstance(number, (int, float)) for number in arg
+            ):
+                xs.append(arg[0])
+                ys.append(arg[1])
+            elif isinstance(arg, (list, tuple)):
+                for point in arg:
+                    if isinstance(point, tuple) and len(point) == 2:
+                        xs.append(point[0])
+                        ys.append(point[1])
+    if not xs:
+        die("recorded an outline with no points")
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def record(font: TTFont, codepoints: list[int]) -> dict[int, tuple[str, RecordingPen]]:
+    cmap = font.getBestCmap()
+    glyph_set = font.getGlyphSet()
+    out: dict[int, tuple[str, RecordingPen]] = {}
+    for codepoint in codepoints:
+        name = cmap.get(codepoint)
+        if name is None:
+            continue
+        pen = RecordingPen()
+        # Drawing through the glyph set decomposes composite glyphs, so the
+        # recording is always a plain outline we can retransform.
+        glyph_set[name].draw(pen)
+        if pen.value:
+            out[codepoint] = (name, pen)
+    return out
+
+
+def cell_advance(font: TTFont) -> int:
+    """The monospace cell width: the advance shared by most glyphs."""
+    counts = Counter(advance for advance, _ in font["hmtx"].metrics.values())
+    advance, share = counts.most_common(1)[0]
+    if share < font["maxp"].numGlyphs * 0.5:
+        die("font is not monospaced; refusing to guess a cell width")
+    return advance
+
+
+def install_glyph(
+    font: TTFont,
+    name: str,
+    pen: RecordingPen,
+    scale: float,
+    box_width: float,
+    centre_y: float,
+    advance: float,
+) -> None:
+    """Write a scaled, centred copy of a recorded outline into `font`."""
+    x_min, y_min, x_max, y_max = outline_bounds(pen)
+    # Centre in the box the terminal grants, not in the single cell the mark
+    # nominally occupies, so an oversized mark grows into the blank cell on its
+    # right instead of backing into the state icon on its left.
+    dx = (box_width - (x_max - x_min) * scale) / 2 - x_min * scale
+    dy = centre_y - ((y_min + y_max) / 2) * scale
+
+    glyph_pen = TTGlyphPen(None)
+    pen.replay(TransformPen(glyph_pen, Transform().translate(dx, dy).scale(scale)))
+    glyph = glyph_pen.glyph()
+    glyph.recalcBounds(font["glyf"])
+
+    if name not in font.getGlyphOrder():
+        order = [*font.getGlyphOrder(), name]
+        font.setGlyphOrder(order)
+        font["glyf"].setGlyphOrder(order)
+    font["glyf"].glyphs[name] = glyph
+    font["hmtx"].metrics[name] = (round(advance), glyph.xMin)
+
+
+def face_metrics(path: Path) -> dict[str, float]:
+    """The metrics a terminal derives its grid and constraint box from."""
+    font = TTFont(path)
+    upem = font["head"].unitsPerEm
+    cap = font["OS/2"].sCapHeight
+    if not cap:
+        die(f"{path.name} declares no OS/2 sCapHeight; cannot size marks against it")
+    ascent = font["hhea"].ascent
+    descent = font["hhea"].descent
+    return {
+        "upem": upem,
+        "cap": cap / upem,
+        "x_height": font["OS/2"].sxHeight / upem,
+        # Ghostty's Metrics.face_width is the advance, face_height the line height.
+        "cell": cell_advance(font) / upem,
+        "line_height": (ascent - descent + font["hhea"].lineGap) / upem,
+        "ascent": ascent / upem,
+        "descent": descent / upem,
+        "typo_ascender": font["OS/2"].sTypoAscender / upem,
+        "typo_descender": font["OS/2"].sTypoDescender / upem,
+    }
+
+
+# --------------------------------------------------------------------------
+# Source discovery
+# --------------------------------------------------------------------------
+
+
+def font_dir() -> Path:
+    if platform.system() == "Darwin":
+        return Path.home() / "Library/Fonts"
+    return Path.home() / ".local/share/fonts"
+
+
+def harness_font() -> Path:
+    """The pristine logo font, from the agent-icons plugin's checkout."""
+    plugins = Path.home() / ".config/herdr/plugins.json"
+    if not plugins.is_file():
+        die(f"{plugins} not found; is Herdr installed?")
+    for plugin in json.loads(plugins.read_text()):
+        if plugin.get("plugin_id") == AGENT_ICONS_PLUGIN_ID:
+            path = Path(plugin["plugin_root"]) / "dist" / HARNESS_FONT_FILE
+            if not path.is_file():
+                die(f"{path} not found; reinstall {AGENT_ICONS_PLUGIN_ID}")
+            return path
+    die(
+        f"the {AGENT_ICONS_PLUGIN_ID} plugin supplies the vendored marks and is not "
+        f"installed. Install it with:\n"
+        f"  herdr plugin install moneycaringcoder/herdr-agent-icons"
+    )
+    raise AssertionError("unreachable")
+
+
+def ghostty_primary_family() -> str | None:
+    config = Path.home() / ".config/ghostty/config"
+    if not config.is_file():
+        return None
+    for line in config.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "font-family":
+            family = value.strip().strip('"')
+            # The harness family is a fallback entry, never the primary.
+            if family and family != cobalt2_marks.HARNESS_FONT_FAMILY:
+                return family
+    return None
+
+
+def resolve_family(family: str) -> Path | None:
+    """Best-effort family name to file path, without a full font database."""
+    compact = family.replace(" ", "")
+    candidates = [
+        f"{compact}-Regular.ttf",
+        f"{compact}Regular.ttf",
+        f"{family}-Regular.ttf",
+        f"{family} Regular.ttf",
+        f"{compact}.ttf",
+    ]
+    directories = [font_dir(), Path("/Library/Fonts"), Path("/usr/share/fonts")]
+    for directory in directories:
+        for candidate in candidates:
+            path = directory / candidate
+            if path.is_file():
+                return path
+    return None
+
+
+def primary_font(explicit: Path | None) -> Path:
+    if explicit:
+        if not explicit.is_file():
+            die(f"not found: {explicit}")
+        return explicit
+    family = ghostty_primary_family()
+    if family:
+        resolved = resolve_family(family)
+        if resolved:
+            return resolved
+        die(
+            f"Ghostty's primary font-family is {family!r} but its file could not be "
+            f"located. Pass it explicitly with --primary /path/to/font.ttf"
+        )
+    die("could not determine the primary font; pass --primary /path/to/font.ttf")
+    raise AssertionError("unreachable")
+
+
+# --------------------------------------------------------------------------
+# Ghostty: rescale the harness font in place
+# --------------------------------------------------------------------------
+
+
+def align_vertical_metrics(font: TTFont, primary: dict[str, float]) -> None:
+    """Adopt the primary font's vertical metrics, in this font's own em units.
+
+    The terminal takes its grid from the primary font, so this changes no
+    layout, but it keeps a metric-matching fallback from applying a second,
+    hidden scale factor.
+    """
+    upem = font["head"].unitsPerEm
+    os2 = font["OS/2"]
+    os2.sCapHeight = round(primary["cap"] * upem)
+    os2.sxHeight = round(primary["x_height"] * upem)
+    os2.sTypoAscender = round(primary["typo_ascender"] * upem)
+    os2.sTypoDescender = round(primary["typo_descender"] * upem)
+    os2.usWinAscent = round(primary["ascent"] * upem)
+    os2.usWinDescent = abs(round(primary["descent"] * upem))
+    font["hhea"].ascent = round(primary["ascent"] * upem)
+    font["hhea"].descent = round(primary["descent"] * upem)
+
+
+def build_ghostty(args: argparse.Namespace) -> Path:
+    if args.width_cells > 2:
+        die("Ghostty's max_constraint_width is 2 cells; anything wider is scaled back down")
+
+    source = args.harness or harness_font()
+    primary_path = primary_font(args.primary)
+    primary = face_metrics(primary_path)
+
+    # recalcTimestamp=False preserves head.modified, keeping rebuilds byte-identical.
+    font = TTFont(source, recalcTimestamp=False)
+    upem = font["head"].unitsPerEm
+    marks = record(font, cobalt2_marks.codepoints("harness"))
+    if not marks:
+        die(f"no harness marks found in {source}")
+
+    cell = primary["cell"] * upem
+    cap = primary["cap"] * upem
+    box_width = args.width_cells * cell
+    box_height = args.height_fill * primary["line_height"] * upem
+
+    boxes = {codepoint: outline_bounds(pen) for codepoint, (_, pen) in marks.items()}
+    widest = max(box[2] - box[0] for box in boxes.values())
+    tallest = max(box[3] - box[1] for box in boxes.values())
+    width_limit = box_width / widest
+    height_limit = box_height / tallest
+    scale = min(width_limit, height_limit)
+    limiter = "width budget" if width_limit < height_limit else "height budget"
+
+    # Ghostty leaves alignment alone for this constraint (align_* = .none), so
+    # the outlines carry their own vertical placement.
+    centre_y = (primary["ascent"] + primary["descent"]) / 2 * upem
+
+    align_vertical_metrics(font, primary)
+    for codepoint, (name, pen) in marks.items():
+        install_glyph(font, name, pen, scale, box_width, centre_y, cell)
+
+    destination = args.out or (font_dir() / HARNESS_FONT_FILE)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    font.save(destination)
+
+    print(f"primary font: {primary_path.name}")
+    print(f"  cell {cell:.0f}, line height {primary['line_height'] * upem:.0f}, cap {cap:.0f}")
+    print(f"box: {box_width:.0f} x {box_height:.0f} ({args.width_cells} cells wide)")
+    print(f"scale: x{scale:.3f}, limited by the {limiter}")
+    for codepoint in sorted(boxes):
+        x_min, y_min, x_max, y_max = boxes[codepoint]
+        height = (y_max - y_min) * scale
+        print(
+            f"  U+{codepoint:04X} {height / cap * 100:5.0f}% of cap height, "
+            f"{(x_max - x_min) * scale / cell:.2f} cells wide"
+        )
+    print(f"wrote {destination}")
+    return destination
+
+
+# --------------------------------------------------------------------------
+# iTerm2: merge every mark into the primary family
+# --------------------------------------------------------------------------
+
+
+def rename_family(font: TTFont, family: str, style: str) -> None:
+    values = {
+        1: family,
+        2: style,
+        4: f"{family} {style}",
+        6: f"{family}-{style}".replace(" ", ""),
+        16: family,
+        17: style,
+    }
+    for name_id, value in values.items():
+        for platform_id, encoding_id in (WINDOWS_PLATFORM, MAC_PLATFORM):
+            language = 0x409 if (platform_id, encoding_id) == WINDOWS_PLATFORM else 0
+            font["name"].setName(value, name_id, platform_id, encoding_id, language)
+
+
+def build_iterm(args: argparse.Namespace) -> list[Path]:
+    harness_path = args.harness or harness_font()
+    base_dir = args.base_dir or font_dir()
+    family = f"{ITERM_BASE_FAMILY} {ITERM_FAMILY_SUFFIX}"
+
+    harness = TTFont(harness_path)
+    harness_marks = record(harness, cobalt2_marks.codepoints("harness"))
+    if not harness_marks:
+        die(f"no harness marks found in {harness_path}")
+    harness_upem = harness["head"].unitsPerEm
+    harness_boxes = {code: outline_bounds(pen) for code, (_, pen) in harness_marks.items()}
+    harness_tallest = max(box[3] - box[1] for box in harness_boxes.values())
+    harness_widest = max(box[2] - box[0] for box in harness_boxes.values())
+
+    # MesloLGS NF predates the Nerd Font codicon expansion, so some borrowed
+    # marks are missing from it and have to come from a donor Nerd Font.
+    borrowed = cobalt2_marks.codepoints("nerd")
+    reference = TTFont(base_dir / f"{ITERM_BASE_FAMILY} Regular.ttf")
+    missing = [code for code in borrowed if code not in reference.getBestCmap()]
+    donor_marks: dict[int, tuple[str, RecordingPen]] = {}
+    donor_upem = 1000
+    if missing:
+        donor_path = primary_font(args.donor)
+        donor = TTFont(donor_path)
+        donor_upem = donor["head"].unitsPerEm
+        donor_marks = record(donor, missing)
+        absent = [code for code in missing if code not in donor_marks]
+        if absent:
+            die(
+                f"{donor_path.name} is missing "
+                + ", ".join(f"U+{code:04X}" for code in absent)
+                + "; pass a newer Nerd Font with --donor"
+            )
+        print(f"donor for {len(donor_marks)} mark(s) absent from {ITERM_BASE_FAMILY}: {donor_path.name}")
+
+    written: list[Path] = []
+    for style, suffix in ITERM_FACES:
+        base = base_dir / f"{ITERM_BASE_FAMILY} {suffix}.ttf"
+        if not base.is_file():
+            die(f"pristine base face not found: {base}")
+        font = TTFont(base, recalcTimestamp=False)
+        upem = font["head"].unitsPerEm
+        cap = font["OS/2"].sCapHeight
+        cell = cell_advance(font)
+
+        rename_family(font, family, style)
+
+        # Harness marks: uniform scale so the tallest reaches cap height, unless
+        # the widest would then overflow the cell.
+        scale = min(
+            (args.cap_fill * cap) / harness_tallest,
+            (args.width_fill * cell) / harness_widest,
+        )
+        for codepoint, (_, pen) in harness_marks.items():
+            install_glyph(font, f"cobalt2mark{codepoint:04X}", pen, scale, cell, cap / 2, cell)
+
+        # Borrowed marks: the donor is a Nerd Font whose glyphs are already
+        # sized for a terminal cell, so only the em difference is corrected.
+        for codepoint, (_, pen) in donor_marks.items():
+            install_glyph(
+                font, f"cobalt2mark{codepoint:04X}", pen, upem / donor_upem, cell, cap / 2, cell
+            )
+
+        for subtable in font["cmap"].tables:
+            if subtable.isUnicode():
+                for codepoint in {**harness_marks, **donor_marks}:
+                    subtable.cmap[codepoint] = f"cobalt2mark{codepoint:04X}"
+
+        destination = (args.out_dir or font_dir()) / f"{family} {suffix}.ttf"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        font.save(destination)
+        written.append(destination)
+        print(
+            f"  {destination.name}: harness x{scale:.3f}, "
+            f"tallest {harness_tallest * scale:.0f}/{cap} of cap height"
+        )
+
+    print(f"set your iTerm2 profile font to: {family}")
+    return written
+
+
+# --------------------------------------------------------------------------
+
+
+def detect_terminal() -> str:
+    program = os.environ.get("TERM_PROGRAM", "").lower()
+    if "ghostty" in program:
+        return "ghostty"
+    if "iterm" in program:
+        return "iterm2"
+    die(
+        f"could not detect the terminal from TERM_PROGRAM={program!r}; "
+        f"pass --terminal ghostty or --terminal iterm2"
+    )
+    raise AssertionError("unreachable")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--terminal",
+        choices=("auto", "ghostty", "iterm2"),
+        default="auto",
+        help="which terminal to build for; auto reads TERM_PROGRAM",
+    )
+    parser.add_argument("--harness", type=Path, help="override the pristine logo font")
+    parser.add_argument("--primary", type=Path, help="the terminal's primary font file")
+    parser.add_argument("--out", type=Path, help="ghostty: output file")
+    parser.add_argument("--out-dir", type=Path, help="iterm2: output directory")
+    parser.add_argument("--base-dir", type=Path, help="iterm2: directory holding pristine MesloLGS NF")
+    parser.add_argument("--donor", type=Path, help="iterm2: Nerd Font supplying marks Meslo lacks")
+    # Both default to Ghostty's hard ceilings, because .fit cannot scale a mark
+    # up: whatever the font ships is the final rendered size. Lower them to
+    # shrink the marks.
+    parser.add_argument(
+        "--width-cells",
+        type=float,
+        default=2.0,
+        help="ghostty: width budget in cells, at most 2 (default 2)",
+    )
+    parser.add_argument(
+        "--height-fill",
+        type=float,
+        default=1.0,
+        help="ghostty: height budget as a fraction of line height (default 1)",
+    )
+    parser.add_argument(
+        "--cap-fill",
+        type=float,
+        default=1.0,
+        help="iterm2: tallest mark as a fraction of cap height (default 1.0)",
+    )
+    parser.add_argument(
+        "--width-fill",
+        type=float,
+        default=0.98,
+        help="iterm2: widest mark as a fraction of one cell (default 0.98)",
+    )
+    args = parser.parse_args()
+
+    terminal = detect_terminal() if args.terminal == "auto" else args.terminal
+    if terminal == "ghostty":
+        build_ghostty(args)
+    else:
+        build_iterm(args)
+    print("restart the terminal to drop its cached faces")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Report the Cobalt2 agent mark for panes, as a display-only sidebar token.
+
+This reports `$cobalt2_logo` rather than reusing the agent-icons plugin's
+`$harness_logo`. Herdr resolves a token name to whichever source wrote it last,
+so two plugins reporting one name race each other on every
+`pane.agent_detected`; a distinct name lets both coexist, and lets this theme
+cover the harnesses agent-icons ships no mark for.
+
+Nothing here touches `report-agent`, `--display-agent`, or `--state-label`, so
+Herdr keeps its own colored lifecycle icon and its idle/working/blocked/done
+state.
+
+Stdlib only: Herdr runs plugin commands with a minimal PATH and no site
+packages.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import cobalt2_marks  # noqa: E402
+
+TOKEN_NAME = "cobalt2_logo"
+DEFAULT_SOURCE = "herdr-theme-cobalt2"
+VARIANTS = ("font", "text", "none")
+
+
+def herdr_bin() -> str:
+    return os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def run_herdr(*args: str) -> dict[str, Any]:
+    herdr = herdr_bin()
+    try:
+        result = subprocess.run([herdr, *args], check=False, capture_output=True, text=True)
+    except OSError as error:
+        # Herdr's minimal PATH may not resolve a bare `herdr`; HERDR_BIN_PATH is
+        # the supported way in. Report that plainly instead of a traceback.
+        raise RuntimeError(f"could not run {herdr!r}: {error}") from error
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(message or f"herdr exited with status {result.returncode}")
+    if not result.stdout.strip():
+        return {}
+    return json.loads(result.stdout)
+
+
+def configured_variant(explicit: str | None) -> str:
+    if explicit is not None:
+        return explicit
+    config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+    if not config_dir:
+        return "font"
+    config_path = Path(config_dir) / "config.toml"
+    if not config_path.is_file():
+        return "font"
+    # Read the one key with a regex rather than tomllib, which is absent from
+    # the Python 3.9 that /usr/bin/python3 still is on macOS.
+    match = re.search(
+        r'^\s*marks\s*=\s*["\']([a-z]+)["\']\s*$',
+        config_path.read_text(),
+        re.MULTILINE,
+    )
+    if match is None:
+        return "font"
+    variant = match.group(1)
+    if variant not in VARIANTS:
+        raise RuntimeError(f"invalid marks variant {variant!r} in {config_path}")
+    return variant
+
+
+def mark_for(agent: str | None, variant: str) -> str | None:
+    if agent is None or variant == "none":
+        return None
+    if variant == "text":
+        return cobalt2_marks.text_fallback(agent)
+    return cobalt2_marks.glyph(agent)
+
+
+def report(source: str, pane_id: str, agent: str | None, variant: str) -> str | None:
+    mark = mark_for(agent, variant)
+    args = ["pane", "report-metadata", pane_id, "--source", source]
+    if mark is None:
+        # Clear rather than leave a stale mark when a pane's agent changes to
+        # one this table does not cover.
+        args += ["--clear-token", TOKEN_NAME]
+    else:
+        args += ["--token", f"{TOKEN_NAME}={mark}"]
+    run_herdr(*args)
+    return mark
+
+
+def event_pane() -> tuple[str, str | None] | None:
+    """Pane id and agent from the event envelope, when invoked as a hook."""
+    raw = os.environ.get("HERDR_PLUGIN_EVENT_JSON")
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    event = payload.get("event", payload) if isinstance(payload, dict) else {}
+    pane_id = _find(event, "pane_id")
+    if pane_id is None:
+        return None
+    return pane_id, _find(event, "agent")
+
+
+def _find(value: Any, key: str) -> str | None:
+    """Depth-first search for a string field; envelopes nest inconsistently."""
+    if isinstance(value, dict):
+        found = value.get(key)
+        if isinstance(found, str):
+            return found
+        for child in value.values():
+            found = _find(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def all_panes() -> list[tuple[str, str | None]]:
+    panes = run_herdr("pane", "list").get("result", {}).get("panes", [])
+    return [
+        (pane["pane_id"], pane.get("agent"))
+        for pane in panes
+        if isinstance(pane, dict) and isinstance(pane.get("pane_id"), str)
+    ]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--variant", choices=VARIANTS, help="override the configured variant")
+    parser.add_argument("--pane", help="report a single pane instead of every pane")
+    parser.add_argument("--agent", help="agent id for --pane; omit to clear the token")
+    args = parser.parse_args()
+
+    variant = configured_variant(args.variant)
+    source = os.environ.get("HERDR_PLUGIN_ID") or DEFAULT_SOURCE
+
+    if args.pane:
+        targets = [(args.pane, args.agent)]
+    else:
+        event = event_pane()
+        targets = [event] if event else all_panes()
+
+    marked = 0
+    for pane_id, agent in targets:
+        if report(source, pane_id, agent, variant) is not None:
+            marked += 1
+    print(f"cobalt2 marks: {marked} of {len(targets)} pane(s) marked (variant {variant})")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RuntimeError as error:
+        print(f"agent-marks: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
