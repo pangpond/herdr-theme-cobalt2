@@ -94,7 +94,8 @@ def render_theme_block() -> str:
     ]
     for key in TOKEN_ORDER:
         lines.append(f'{key} = "{CUSTOM[key]}"')
-    return "\n".join(lines) + "\n"
+    # Trailing blank line keeps the next config section visually separated.
+    return "\n".join(lines) + "\n\n"
 
 
 def extract_theme_block(text: str) -> str | None:
