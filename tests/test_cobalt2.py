@@ -24,7 +24,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 import cobalt2_marks  # noqa: E402
 
 BMP_PUA = range(0xE000, 0xF900)
-#: The agent-icons plugin's permanent codepoint assignments.
+#: Stable assignments in this repository's bundled logo font.
 HARNESS_RANGE = range(0xE1A0, 0xE1A9)
 
 
@@ -47,8 +47,8 @@ class MarkTableTest(unittest.TestCase):
             with self.subTest(agent=agent):
                 self.assertIn(mark.codepoint, BMP_PUA)
 
-    def test_vendored_marks_match_the_agent_icons_assignments(self):
-        """These codepoints belong to agent-icons; this table only mirrors them."""
+    def test_vendored_marks_match_the_font_manifest(self):
+        """The bundled font reserves one contiguous codepoint range."""
         vendored = cobalt2_marks.codepoints("harness")
         self.assertEqual(vendored, list(HARNESS_RANGE))
 
@@ -254,6 +254,68 @@ class AgentMarksTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--clear-token", fake.calls()[-1])
+
+
+
+class BundledFontTest(unittest.TestCase):
+    def setUp(self):
+        if importlib.util.find_spec("fontTools") is None:
+            self.skipTest("fontTools is only required for font build checks")
+
+    def test_font_contains_every_bundled_mark(self):
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(PLUGIN_ROOT / "dist" / "HerdrHarnessLogos-Regular.ttf")
+        self.assertEqual(
+            set(cobalt2_marks.codepoints("harness")),
+            set(font.getBestCmap()),
+        )
+
+    def test_source_build_is_byte_reproducible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "rebuilt.ttf"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PLUGIN_ROOT / "tools" / "build_logo_font.py"),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_bytes(),
+                (PLUGIN_ROOT / "dist" / "HerdrHarnessLogos-Regular.ttf").read_bytes(),
+            )
+
+    def test_scaler_uses_bundled_font_without_plugin_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "scaled.ttf"
+            env = {
+                **os.environ,
+                "HOME": str(root),
+                "HERDR_PLUGIN_STATE_DIR": str(root / "state"),
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PLUGIN_ROOT / "bin" / "scale-agent-fonts"),
+                    "--terminal",
+                    "ghostty",
+                    "--primary",
+                    str(PLUGIN_ROOT / "dist" / "HerdrHarnessLogos-Regular.ttf"),
+                    "--out",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output.is_file())
 
 
 if __name__ == "__main__":

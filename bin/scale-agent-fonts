@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resize the harness logo glyphs so they match the size of sidebar text.
+"""Resize the bundled logo glyphs so they match the size of sidebar text.
 
 Two terminals need two different fixes, because they resolve fonts differently.
 
@@ -40,7 +40,6 @@ byte-reproducible.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import platform
 import subprocess
@@ -54,7 +53,6 @@ sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 import cobalt2_marks  # noqa: E402
 
 FONTTOOLS_PIN = "fonttools==4.65.0"
-AGENT_ICONS_PLUGIN_ID = "moneycaringcoder.agent-icons"
 HARNESS_FONT_FILE = "HerdrHarnessLogos-Regular.ttf"
 ITERM_BASE_FAMILY = "MesloLGS NF"
 ITERM_FAMILY_SUFFIX = "Herdr"
@@ -223,22 +221,14 @@ def font_dir() -> Path:
 
 
 def harness_font() -> Path:
-    """The pristine logo font, from the agent-icons plugin's checkout."""
-    plugins = Path.home() / ".config/herdr/plugins.json"
-    if not plugins.is_file():
-        die(f"{plugins} not found; is Herdr installed?")
-    for plugin in json.loads(plugins.read_text()):
-        if plugin.get("plugin_id") == AGENT_ICONS_PLUGIN_ID:
-            path = Path(plugin["plugin_root"]) / "dist" / HARNESS_FONT_FILE
-            if not path.is_file():
-                die(f"{path} not found; reinstall {AGENT_ICONS_PLUGIN_ID}")
-            return path
-    die(
-        f"the {AGENT_ICONS_PLUGIN_ID} plugin supplies the vendored marks and is not "
-        f"installed. Install it with:\n"
-        f"  herdr plugin install moneycaringcoder/herdr-agent-icons"
-    )
-    raise AssertionError("unreachable")
+    """The pristine logo font shipped by this plugin."""
+    path = PLUGIN_ROOT / "dist" / HARNESS_FONT_FILE
+    if not path.is_file():
+        die(
+            f"{path} not found; rebuild the bundled font with:\n"
+            f"  python3 tools/build_logo_font.py"
+        )
+    return path
 
 
 def ghostty_primary_family() -> str | None:
@@ -249,7 +239,7 @@ def ghostty_primary_family() -> str | None:
         key, _, value = line.partition("=")
         if key.strip() == "font-family":
             family = value.strip().strip('"')
-            # The harness family is a fallback entry, never the primary.
+            # The logo family is a fallback entry, never the primary.
             if family and family != cobalt2_marks.HARNESS_FONT_FAMILY:
                 return family
     return None

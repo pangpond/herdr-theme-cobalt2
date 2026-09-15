@@ -1,6 +1,6 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.2.0"
+version = "0.3.0"
 # Agent row styling rules were verified against 0.9.0.
 min_herdr_version = "0.9.0"
 description = "Apply Wes Bos Cobalt2 colors to Herdr's UI, with a sized harness mark on every agent row."
@@ -39,7 +39,7 @@ command = ["python3", "bin/agent-marks"]
 [[actions]]
 id = "scale-fonts"
 title = "Agent marks: resize for this terminal"
-description = "Rebuild the harness logo font so marks match the size of sidebar text. Restart the terminal afterwards."
+description = "Rebuild the bundled logo font so marks match the size of sidebar text. Restart the terminal afterwards."
 contexts = ["global"]
 command = ["python3", "bin/scale-agent-fonts"]
 

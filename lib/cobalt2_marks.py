@@ -1,13 +1,12 @@
 """Agent mark table shared by the sidebar reporter, the font tool, and the
 theme writer.
 
-Herdr recognizes far more harnesses than the agent-icons plugin ships marks
-for, so rows for the rest render with no logo at all. This table fills every
-gap, using two glyph sources:
+Herdr recognizes more harnesses than have dedicated brand artwork, so this
+table combines two glyph sources:
 
-- "harness": U+E1A0-U+E1A8 from the agent-icons font, "Herdr Harness Logos".
-  These are real vendored brand marks. The codepoints are that plugin's
-  permanent assignments, so they are mirrored here rather than reassigned.
+- "harness": U+E1A0-U+E1A8 from the "Herdr Harness Logos" font bundled in
+  this repository. The corresponding vector sources and license notices live
+  under assets/.
 - "nerd": a glyph borrowed from the terminal's primary Nerd Font. Some are the
   actual brand mark (Copilot), others are mnemonics (an X for xAI's Grok).
 
@@ -47,7 +46,7 @@ class Mark(NamedTuple):
     text: str
     #: Sidebar foreground. ACCENT costs no styling rule, see rule_specs().
     color: str
-    #: "harness" for the agent-icons font, "nerd" for the primary Nerd Font.
+    #: "harness" for the bundled logo font, "nerd" for the primary Nerd Font.
     source: str
 
 
@@ -63,7 +62,7 @@ def _nerd(codepoint: int, text: str, color: str) -> Mark:
 # names disagree in a few places (github_copilot vs copilot, open_code vs
 # opencode), so both spellings are present and resolve to the same mark.
 MARKS: dict[str, Mark] = {
-    # Vendored marks, from the agent-icons font.
+    # Brand marks from the font bundled in dist/.
     "claude": _harness(0xE1A0, "C", _PEACH),
     "codex": _harness(0xE1A1, "AI", _TEAL),
     "opencode": _harness(0xE1A2, "OC", _STONE),

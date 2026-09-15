@@ -32,9 +32,15 @@ It recolors **Herdr UI chrome** only. Terminal cell and ANSI colors still come f
 
 Herdr's own state icon keeps its column; the mark is added beside it, colored per harness.
 
-Marks come from two places. Nine are real vendored brand logos at U+E1A0–U+E1A8, which ship with the [`agent-icons`](https://github.com/moneycaringcoder/herdr-agent-icons) plugin — **install it to get those**. The rest are borrowed from your primary Nerd Font, so they need no extra font: an X for Grok, the real Copilot glyph, a spark for Gemini, and so on. See `lib/cobalt2_marks.py` for the full table.
+Nine dedicated logos at U+E1A0–U+E1A8 ship directly with this plugin in
+`dist/HerdrHarnessLogos-Regular.ttf`; their vector sources, deterministic
+builder, and license notices are also kept in this repository. The remaining
+marks are borrowed from your primary Nerd Font: an X for Grok, the real Copilot
+glyph, a spark for Gemini, and so on. See `lib/cobalt2_marks.py` for the full
+table.
 
-This plugin reports `$cobalt2_logo` rather than reusing agent-icons' `$harness_logo`. Herdr resolves a token name to whichever source wrote it last, so two plugins reporting one name would race on every pane event. Both can run together.
+This plugin owns and reports `$cobalt2_logo`; it does not require or read from
+the `agent-icons` plugin.
 
 To use ASCII marks instead of glyphs, or none at all, put this in the plugin's config directory (`~/.config/herdr/plugins/config/herdr-theme-cobalt2/config.toml`):
 
@@ -55,7 +61,7 @@ Rebuild the font for whichever terminal you use:
 herdr plugin action invoke scale-fonts --plugin herdr-theme-cobalt2
 ```
 
-Then restart the terminal, which caches font faces. The action detects the terminal from `TERM_PROGRAM`; pass `--terminal ghostty` or `--terminal iterm2` to the script directly to override it. Re-run it after the `agent-icons` plugin updates, or after you change your primary font.
+Then restart the terminal, which caches font faces. The action detects the terminal from `TERM_PROGRAM`; pass `--terminal ghostty` or `--terminal iterm2` to the script directly to override it. Re-run it after you change your primary font.
 
 **Ghostty** also needs the codepoint map in `~/.config/ghostty/config`:
 
@@ -70,6 +76,17 @@ Marks are grown to fill the two-cell box Ghostty grants a symbol followed by a b
 **iTerm2** gets a merged family, `MesloLGS NF Herdr`, built from your pristine MesloLGS NF faces; set your profile font to it afterwards. MesloLGS NF predates the Nerd Font codicon expansion and is missing five of the borrowed marks, so those are pulled from a donor Nerd Font automatically.
 
 The font tool needs `fontTools`, which it installs into a venv under the plugin's state directory on first run.
+
+To rebuild the pristine bundled font from its SVG sources:
+
+```bash
+python3 -m pip install -r requirements-font.txt
+python3 tools/build_logo_font.py
+```
+
+The generated TTF is byte-reproducible. Third-party mark origins, modifications,
+trademark caveats, and complete license texts are in
+`assets/THIRD_PARTY_NOTICES.md` and `assets/licenses/`.
 
 ## Actions
 
@@ -116,7 +133,7 @@ Uninstall does not revert `config.toml`. Run `restore` first, or edit the blocks
 - Herdr 0.9.0+ (agent row styling rules)
 - macOS or Linux
 - Python 3
-- Optional: [`agent-icons`](https://github.com/moneycaringcoder/herdr-agent-icons) for the nine vendored brand logos
+- `fontTools` 4.65.0 only when rebuilding or resizing fonts; `scale-fonts` installs it into plugin state automatically
 
 ## License
 

@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Report the Cobalt2 agent mark for panes, as a display-only sidebar token.
 
-This reports `$cobalt2_logo` rather than reusing the agent-icons plugin's
-`$harness_logo`. Herdr resolves a token name to whichever source wrote it last,
-so two plugins reporting one name race each other on every
-`pane.agent_detected`; a distinct name lets both coexist, and lets this theme
-cover the harnesses agent-icons ships no mark for.
+The repository-owned `$cobalt2_logo` token avoids metadata collisions with
+unrelated plugins and covers every harness Herdr recognizes.
 
 Nothing here touches `report-agent`, `--display-agent`, or `--state-label`, so
 Herdr keeps its own colored lifecycle icon and its idle/working/blocked/done

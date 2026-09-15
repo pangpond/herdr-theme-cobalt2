@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 pangpond
+Copyright (c) 2026 moneycaringcoder
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,9 @@ SOFTWARE.
 
 ---
 
-The MIT license above covers this project's own code, documentation, and build
-tooling. The marks in `assets/svg/`, the derived font in `dist/`, and adapted
-font tooling have additional origins and notices recorded in
-`assets/THIRD_PARTY_NOTICES.md`; complete third-party license texts are in
-`assets/licenses/`.
+The MIT licence above covers this project's own code, documentation, and build
+tooling. The harness marks in `assets/svg/`, and the font in `dist/` built from
+them, are derived from third-party sources under the Apache License 2.0 and the
+MIT licence. Their origins, pinned commits, modifications, copyright notices,
+and trademark caveats are recorded in `assets/THIRD_PARTY_NOTICES.md`, and the
+complete licence texts are in `assets/licenses/`.
