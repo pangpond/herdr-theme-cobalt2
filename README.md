@@ -23,8 +23,8 @@ Requires Herdr 0.9.0+, macOS or Linux, and Python 3.
    herdr plugin action invoke scale-fonts --plugin herdr-theme-cobalt2
    ```
 
-   The first run installs the pinned `fontTools` dependency into the plugin's
-   state directory.
+   Ghostty and iTerm2 install the pinned `fontTools` dependency into the
+   plugin's state directory on first run. Foot needs no Python dependency.
 
 3. Activate the generated font:
 
@@ -40,6 +40,15 @@ Requires Herdr 0.9.0+, macOS or Linux, and Python 3.
    - **iTerm2:** the action builds `MesloLGS NF Herdr` from the four pristine
      MesloLGS NF faces in `~/Library/Fonts`; select that generated family in
      the profile.
+
+   - **Foot:** the action installs `Herdr Harness Logos` under
+     `~/.local/share/fonts` and refreshes fontconfig. Add it after the primary
+     family in `~/.config/foot/foot.ini`, using the same size:
+
+     ```ini
+     [main]
+     font=JetBrainsMono Nerd Font:size=11, Herdr Harness Logos:size=11
+     ```
 
 Restart the terminal after changing its font configuration.
 
@@ -75,15 +84,21 @@ marks = "text"  # or "none"
 
 ## Sizing the marks
 
-The vendored logo font is drawn at 1000 units/em against a terminal font's 2048, so out of the box the marks render at roughly half the size of the text next to them. Neither terminal fixes this for you:
+The bundled font uses 1000 units/em. Each terminal handles that source
+differently:
 
-- **Ghostty** constrains these codepoints with `.fit`, whose scale factor is `min(1, …)`. It only ever scales a glyph *down*, so an undersized mark stays undersized.
-- **iTerm2** has no per-codepoint font map at all, so the marks have to live inside the primary family.
+- **Ghostty** constrains these codepoints with `.fit`, whose scale factor is
+  `min(1, …)`. It only scales down, so the build grows the outlines to the
+  renderer's ceiling.
+- **iTerm2** has no per-codepoint fallback map. The marks are merged into its
+  2048 units/em primary family and scaled between the two coordinate systems.
+- **Foot** resolves an explicit fontconfig fallback at the configured point
+  size, so it only needs the bundled font installed.
 
-The install flow's `scale-fonts` action detects the terminal from
-`TERM_PROGRAM`. Run `bin/scale-agent-fonts` directly with `--terminal ghostty`
-or `--terminal iterm2` to override detection. Re-run it after changing your
-primary font.
+The `scale-fonts` action detects Ghostty and iTerm2 from `TERM_PROGRAM`, and
+Foot from `TERM`. Run `bin/scale-agent-fonts` directly with `--terminal
+ghostty`, `--terminal iterm2`, or `--terminal foot` to override detection.
+Re-run it after changing your primary font.
 
 Ghostty marks are grown to fill the two-cell box granted to a symbol followed
 by a blank cell. Pass `--width-cells` or `--height-fill` to make them smaller.
@@ -92,7 +107,7 @@ iTerm2's generated family also receives Nerd Font marks missing from the
 pristine MesloLGS NF faces; the donor is resolved from the primary Nerd Font.
 Pass `--cap-fill` or `--width-fill` to tune their size.
 
-The font tool needs `fontTools`, which it installs into a venv under the plugin's state directory on first run.
+The Ghostty and iTerm2 build paths need `fontTools`, which the action installs into a venv under the plugin's state directory on first run.
 
 To rebuild the pristine bundled font from its SVG sources:
 

@@ -257,6 +257,38 @@ class AgentMarksTest(unittest.TestCase):
 
 
 
+class FootFontTest(unittest.TestCase):
+    def test_auto_detects_foot_and_installs_bundled_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "HerdrHarnessLogos-Regular.ttf"
+            env = {
+                **os.environ,
+                "HOME": str(root),
+                "HERDR_PLUGIN_STATE_DIR": str(root / "state"),
+                "TERM": "foot",
+                "TERM_PROGRAM": "",
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PLUGIN_ROOT / "bin" / "scale-agent-fonts"),
+                    "--out",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_bytes(),
+                (PLUGIN_ROOT / "dist" / "HerdrHarnessLogos-Regular.ttf").read_bytes(),
+            )
+            self.assertIn("foot.ini", result.stdout)
+            self.assertFalse((root / "state").exists())
+
+
 class BundledFontTest(unittest.TestCase):
     def setUp(self):
         if importlib.util.find_spec("fontTools") is None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resize the bundled logo glyphs so they match the size of sidebar text.
 
-Two terminals need two different fixes, because they resolve fonts differently.
+Three terminals need different setup because they resolve fallback fonts differently.
 
 Ghostty (`--terminal ghostty`)
     Ghostty maps U+E1A0-U+E1A8 to "Herdr Harness Logos" via font-codepoint-map,
@@ -30,6 +30,11 @@ iTerm2 (`--terminal iterm2`)
     and is missing several of the borrowed marks, so those are merged in from a
     donor Nerd Font too.
 
+Foot (`--terminal foot`)
+    Foot accepts an explicit comma-separated fallback list. The bundled logo
+    font is copied into the user's font directory and the fontconfig cache is
+    refreshed; add "Herdr Harness Logos" after the primary family in foot.ini.
+
 Marks are scaled uniformly rather than each stretched to a common height, so
 their designed relative weights survive.
 
@@ -43,6 +48,7 @@ import argparse
 import os
 import platform
 import subprocess
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -96,13 +102,15 @@ def ensure_fonttools() -> None:
     os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
-ensure_fonttools()
-
-from fontTools.misc.transform import Transform  # noqa: E402
-from fontTools.pens.recordingPen import RecordingPen  # noqa: E402
-from fontTools.pens.transformPen import TransformPen  # noqa: E402
-from fontTools.pens.ttGlyphPen import TTGlyphPen  # noqa: E402
-from fontTools.ttLib import TTFont  # noqa: E402
+def load_fonttools() -> None:
+    """Load the optional build dependency only for terminals that reshape fonts."""
+    ensure_fonttools()
+    global Transform, RecordingPen, TransformPen, TTGlyphPen, TTFont
+    from fontTools.misc.transform import Transform
+    from fontTools.pens.recordingPen import RecordingPen
+    from fontTools.pens.transformPen import TransformPen
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    from fontTools.ttLib import TTFont
 
 
 # --------------------------------------------------------------------------
@@ -465,15 +473,42 @@ def build_iterm(args: argparse.Namespace) -> list[Path]:
 # --------------------------------------------------------------------------
 
 
+def install_foot(args: argparse.Namespace) -> Path:
+    """Install the bundled font as an explicit Foot fallback."""
+    source = args.harness or harness_font()
+    destination = args.out or (font_dir() / HARNESS_FONT_FILE)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+    cache = shutil.which("fc-cache")
+    if args.out is None and cache is not None:
+        result = subprocess.run([cache, "-f", str(destination.parent)], check=False)
+        if result.returncode:
+            print(
+                f"warning: fc-cache exited with status {result.returncode}",
+                file=sys.stderr,
+            )
+
+    print(f"wrote {destination}")
+    print(
+        "add the fallback in foot.ini:\n"
+        "  font=<your primary font>:size=<n>, Herdr Harness Logos:size=<n>"
+    )
+    return destination
+
+
 def detect_terminal() -> str:
     program = os.environ.get("TERM_PROGRAM", "").lower()
+    term = os.environ.get("TERM", "").lower()
     if "ghostty" in program:
         return "ghostty"
     if "iterm" in program:
         return "iterm2"
+    if program == "foot" or term == "foot" or term.startswith("foot-"):
+        return "foot"
     die(
-        f"could not detect the terminal from TERM_PROGRAM={program!r}; "
-        f"pass --terminal ghostty or --terminal iterm2"
+        f"could not detect the terminal from TERM_PROGRAM={program!r}, TERM={term!r}; "
+        f"pass --terminal ghostty, iterm2, or foot"
     )
     raise AssertionError("unreachable")
 
@@ -484,13 +519,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--terminal",
-        choices=("auto", "ghostty", "iterm2"),
+        choices=("auto", "ghostty", "iterm2", "foot"),
         default="auto",
         help="which terminal to build for; auto reads TERM_PROGRAM",
     )
     parser.add_argument("--harness", type=Path, help="override the pristine logo font")
     parser.add_argument("--primary", type=Path, help="the terminal's primary font file")
-    parser.add_argument("--out", type=Path, help="ghostty: output file")
+    parser.add_argument("--out", type=Path, help="ghostty/foot: output file")
     parser.add_argument("--out-dir", type=Path, help="iterm2: output directory")
     parser.add_argument("--base-dir", type=Path, help="iterm2: directory holding pristine MesloLGS NF")
     parser.add_argument("--donor", type=Path, help="iterm2: Nerd Font supplying marks Meslo lacks")
@@ -524,10 +559,14 @@ def main() -> int:
     args = parser.parse_args()
 
     terminal = detect_terminal() if args.terminal == "auto" else args.terminal
-    if terminal == "ghostty":
-        build_ghostty(args)
+    if terminal == "foot":
+        install_foot(args)
     else:
-        build_iterm(args)
+        load_fonttools()
+        if terminal == "ghostty":
+            build_ghostty(args)
+        else:
+            build_iterm(args)
     print("restart the terminal to drop its cached faces")
     return 0
 
