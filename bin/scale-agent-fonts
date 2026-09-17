@@ -47,8 +47,9 @@ from __future__ import annotations
 import argparse
 import os
 import platform
-import subprocess
+import re
 import shutil
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -60,6 +61,8 @@ import cobalt2_marks  # noqa: E402
 
 FONTTOOLS_PIN = "fonttools==4.65.0"
 HARNESS_FONT_FILE = "HerdrHarnessLogos-Regular.ttf"
+GHOSTTY_MARKER = "# herdr-theme-cobalt2 agent marks"
+GHOSTTY_RANGE = "U+E1A0-U+E1A8"
 ITERM_BASE_FAMILY = "MesloLGS NF"
 ITERM_FAMILY_SUFFIX = "Herdr"
 ITERM_FACES = (("Regular", "Regular"), ("Bold", "Bold"), ("Italic", "Italic"), ("Bold Italic", "Bold Italic"))
@@ -239,22 +242,118 @@ def harness_font() -> Path:
     return path
 
 
-def ghostty_primary_family() -> str | None:
-    config = Path.home() / ".config/ghostty/config"
-    if not config.is_file():
+def ghostty_config_path() -> Path:
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(configured) if configured else Path.home() / ".config"
+    return root / "ghostty" / "config"
+
+
+def ghostty_executable() -> str | None:
+    executable = shutil.which("ghostty")
+    if executable:
+        return executable
+    macos_app = Path("/Applications/Ghostty.app/Contents/MacOS/ghostty")
+    return str(macos_app) if macos_app.is_file() else None
+
+
+def ghostty_reported_primary_family() -> str | None:
+    executable = ghostty_executable()
+    if executable is None:
         return None
-    for line in config.read_text().splitlines():
-        key, _, value = line.partition("=")
-        if key.strip() == "font-family":
-            family = value.strip().strip('"')
-            # The logo family is a fallback entry, never the primary.
-            if family and family != cobalt2_marks.HARNESS_FONT_FAMILY:
-                return family
-    return None
+    result = subprocess.run(
+        [executable, "+show-face", "--string=A"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r'face [“"](.+?)[”"]', result.stdout)
+    return match.group(1) if result.returncode == 0 and match else None
+
+
+def ghostty_primary_family() -> str | None:
+    config = ghostty_config_path()
+    if config.is_file():
+        for line in config.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "font-family":
+                family = value.strip().strip('"')
+                # The logo family is a fallback entry, never the primary.
+                if family and family != cobalt2_marks.HARNESS_FONT_FAMILY:
+                    return family
+    return ghostty_reported_primary_family()
+
+
+def configure_ghostty(
+    primary_family: str,
+    config: Path | None = None,
+    backup: Path | None = None,
+) -> Path:
+    """Install one canonical fallback/map block without disturbing user config."""
+    path = config or ghostty_config_path()
+    backup_path = backup or (state_dir() / "ghostty-config.backup")
+    original = path.read_text() if path.is_file() else ""
+    lines: list[str] = []
+    has_primary = False
+
+    for line in original.splitlines():
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        family = value.strip('"')
+        if line.strip() == GHOSTTY_MARKER:
+            continue
+        if key == "font-family" and family == cobalt2_marks.HARNESS_FONT_FAMILY:
+            continue
+        if key == "font-codepoint-map" and separator:
+            mapped_range, mapped_separator, _ = value.partition("=")
+            if mapped_separator and mapped_range.strip().upper() == GHOSTTY_RANGE:
+                continue
+        if key == "font-family" and family:
+            has_primary = True
+        lines.append(line)
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not has_primary:
+        lines.append(f'font-family = "{primary_family}"')
+    if lines:
+        lines.append("")
+    lines.extend(
+        (
+            GHOSTTY_MARKER,
+            f'font-family = "{cobalt2_marks.HARNESS_FONT_FAMILY}"',
+            f'font-codepoint-map = {GHOSTTY_RANGE}="{cobalt2_marks.HARNESS_FONT_FAMILY}"',
+        )
+    )
+    updated = "\n".join(lines) + "\n"
+    if updated == original:
+        print(f"Ghostty config already current: {path}")
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if original and not backup_path.exists():
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup_path)
+        print(f"backed up Ghostty config to {backup_path}")
+    path.write_text(updated)
+    print(f"configured Ghostty fallback in {path}")
+    return path
 
 
 def resolve_family(family: str) -> Path | None:
-    """Best-effort family name to file path, without a full font database."""
+    """Resolve a family through fontconfig, then common font file names."""
+    matcher = shutil.which("fc-match")
+    if matcher:
+        result = subprocess.run(
+            [matcher, "-f", "%{file}\n", family],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout:
+            matched = Path(result.stdout.splitlines()[0])
+            if matched.is_file():
+                return matched
     compact = family.replace(" ", "")
     candidates = [
         f"{compact}-Regular.ttf",
@@ -287,6 +386,21 @@ def primary_font(explicit: Path | None) -> Path:
             f"located. Pass it explicitly with --primary /path/to/font.ttf"
         )
     die("could not determine the primary font; pass --primary /path/to/font.ttf")
+    raise AssertionError("unreachable")
+
+
+def font_family_name(path: Path) -> str:
+    font = TTFont(path, lazy=True)
+    try:
+        for name_id in (16, 1):
+            for record in font["name"].names:
+                if record.nameID == name_id:
+                    family = record.toUnicode().strip()
+                    if family:
+                        return family
+    finally:
+        font.close()
+    die(f"{path.name} has no font family name")
     raise AssertionError("unreachable")
 
 
@@ -353,6 +467,8 @@ def build_ghostty(args: argparse.Namespace) -> Path:
     destination = args.out or (font_dir() / HARNESS_FONT_FILE)
     destination.parent.mkdir(parents=True, exist_ok=True)
     font.save(destination)
+    if args.out is None and not args.no_configure:
+        configure_ghostty(font_family_name(primary_path))
 
     print(f"primary font: {primary_path.name}")
     print(f"  cell {cell:.0f}, line height {primary['line_height'] * upem:.0f}, cap {cap:.0f}")
@@ -529,6 +645,11 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, help="iterm2: output directory")
     parser.add_argument("--base-dir", type=Path, help="iterm2: directory holding pristine MesloLGS NF")
     parser.add_argument("--donor", type=Path, help="iterm2: Nerd Font supplying marks Meslo lacks")
+    parser.add_argument(
+        "--no-configure",
+        action="store_true",
+        help="ghostty: install the font without updating Ghostty's config",
+    )
     # Both default to Ghostty's hard ceilings, because .fit cannot scale a mark
     # up: whatever the font ships is the final rendered size. Lower them to
     # shrink the marks.

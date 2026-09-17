@@ -28,14 +28,12 @@ Requires Herdr 0.9.0+, macOS or Linux, and Python 3.
 
 3. Activate the generated font:
 
-   - **Ghostty:** keep your primary family first, then add the fallback and
-     codepoint map to `~/.config/ghostty/config`:
-
-     ```conf
-     font-family = "JetBrainsMono Nerd Font"
-     font-family = "Herdr Harness Logos"
-     font-codepoint-map = U+E1A0-U+E1A8="Herdr Harness Logos"
-     ```
+   - **Ghostty:** the action updates `~/.config/ghostty/config` automatically,
+     preserving the primary family and adding the `Herdr Harness Logos`
+     fallback plus its U+E1A0–U+E1A8 codepoint map. Before the first change it
+     saves the original as `ghostty-config.backup` in the plugin state
+     directory. Use `bin/scale-agent-fonts --terminal ghostty --no-configure`
+     when only the font file should be generated.
 
    - **iTerm2:** the action builds `MesloLGS NF Herdr` from the four pristine
      MesloLGS NF faces in `~/Library/Fonts`; select that generated family in
@@ -101,7 +99,9 @@ ghostty`, `--terminal iterm2`, or `--terminal foot` to override detection.
 Re-run it after changing your primary font.
 
 Ghostty marks are grown to fill the two-cell box granted to a symbol followed
-by a blank cell. Pass `--width-cells` or `--height-fill` to make them smaller.
+by a blank cell. The action updates its fallback and codepoint map idempotently;
+pass `--width-cells` or `--height-fill` to resize, or `--no-configure` to leave
+the Ghostty config untouched.
 
 iTerm2's generated family also receives Nerd Font marks missing from the
 pristine MesloLGS NF faces; the donor is resolved from the primary Nerd Font.

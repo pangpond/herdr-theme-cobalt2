@@ -257,6 +257,55 @@ class AgentMarksTest(unittest.TestCase):
 
 
 
+class GhosttyConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.scaler = load_script("scale-agent-fonts")
+        self.config = self.tmp / "ghostty" / "config"
+        self.backup = self.tmp / "state" / "ghostty-config.backup"
+
+    def test_configuration_is_idempotent_and_preserves_one_backup(self):
+        original = (
+            'font-family = "JetBrainsMono Nerd Font"\n'
+            'font-family = "Herdr Harness Logos"\n'
+            'font-family = "Herdr Harness Logos"\n'
+            'font-codepoint-map = U+E1A0-U+E1A8="Wrong Family"\n'
+            "background = #173448\n"
+        )
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(original)
+
+        self.scaler.configure_ghostty(
+            "JetBrainsMono Nerd Font", self.config, self.backup
+        )
+        configured = self.config.read_text()
+        self.assertEqual(
+            configured.count('font-family = "Herdr Harness Logos"'), 1
+        )
+        self.assertEqual(
+            configured.count(
+                'font-codepoint-map = U+E1A0-U+E1A8="Herdr Harness Logos"'
+            ),
+            1,
+        )
+        self.assertIn("background = #173448", configured)
+        self.assertEqual(self.backup.read_text(), original)
+
+        self.scaler.configure_ghostty(
+            "JetBrainsMono Nerd Font", self.config, self.backup
+        )
+        self.assertEqual(self.config.read_text(), configured)
+        self.assertEqual(self.backup.read_text(), original)
+
+    def test_missing_config_gets_primary_and_fallback(self):
+        self.scaler.configure_ghostty("Iosevka", self.config, self.backup)
+        configured = self.config.read_text()
+        self.assertIn('font-family = "Iosevka"', configured)
+        self.assertIn('font-family = "Herdr Harness Logos"', configured)
+        self.assertFalse(self.backup.exists())
+
+
 class FootFontTest(unittest.TestCase):
     def test_auto_detects_foot_and_installs_bundled_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -348,6 +397,42 @@ class BundledFontTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(output.is_file())
+
+    def test_ghostty_scaler_configures_default_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config" / "ghostty" / "config"
+            original = 'font-family = "Test Primary"\nbackground = #173448\n'
+            config.parent.mkdir(parents=True)
+            config.write_text(original)
+            env = {
+                **os.environ,
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "HERDR_PLUGIN_STATE_DIR": str(root / "state"),
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PLUGIN_ROOT / "bin" / "scale-agent-fonts"),
+                    "--terminal",
+                    "ghostty",
+                    "--primary",
+                    str(PLUGIN_ROOT / "dist" / "HerdrHarnessLogos-Regular.ttf"),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            configured = config.read_text()
+            self.assertIn('font-family = "Herdr Harness Logos"', configured)
+            self.assertIn("font-codepoint-map = U+E1A0-U+E1A8", configured)
+            self.assertEqual(
+                (root / "state" / "ghostty-config.backup").read_text(),
+                original,
+            )
+
 
 
 if __name__ == "__main__":
