@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-The MIT license above covers this project's own code, documentation, and build
-tooling. The marks in `assets/svg/`, the derived font in `dist/`, and adapted
-font tooling have additional origins and notices recorded in
-`assets/THIRD_PARTY_NOTICES.md`; complete third-party license texts are in
-`assets/licenses/`.

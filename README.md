@@ -6,17 +6,42 @@ Apply [Wes Bos Cobalt2](https://github.com/wesbos/cobalt2-iterm) colors to Herdr
 
 ## Install
 
-```bash
-herdr plugin install pangpond/herdr-theme-cobalt2
-```
+Requires Herdr 0.9.0+, macOS or Linux, and Python 3.
 
-Then apply:
+1. Install and apply the plugin:
 
-```bash
-herdr plugin action invoke apply --plugin herdr-theme-cobalt2
-```
+   ```bash
+   herdr plugin install pangpond/herdr-theme-cobalt2
+   herdr plugin action invoke apply --plugin herdr-theme-cobalt2
+   ```
 
-Or press `prefix+shift+c` inside Herdr.
+   You can reapply it later with `prefix+shift+c` inside Herdr.
+
+2. Build and install the bundled logo font for the current terminal:
+
+   ```bash
+   herdr plugin action invoke scale-fonts --plugin herdr-theme-cobalt2
+   ```
+
+   The first run installs the pinned `fontTools` dependency into the plugin's
+   state directory.
+
+3. Activate the generated font:
+
+   - **Ghostty:** keep your primary family first, then add the fallback and
+     codepoint map to `~/.config/ghostty/config`:
+
+     ```conf
+     font-family = "JetBrainsMono Nerd Font"
+     font-family = "Herdr Harness Logos"
+     font-codepoint-map = U+E1A0-U+E1A8="Herdr Harness Logos"
+     ```
+
+   - **iTerm2:** the action builds `MesloLGS NF Herdr` from the four pristine
+     MesloLGS NF faces in `~/Library/Fonts`; select that generated family in
+     the profile.
+
+Restart the terminal after changing its font configuration.
 
 ## What it does
 
@@ -55,25 +80,17 @@ The vendored logo font is drawn at 1000 units/em against a terminal font's 2048,
 - **Ghostty** constrains these codepoints with `.fit`, whose scale factor is `min(1, …)`. It only ever scales a glyph *down*, so an undersized mark stays undersized.
 - **iTerm2** has no per-codepoint font map at all, so the marks have to live inside the primary family.
 
-Rebuild the font for whichever terminal you use:
+The install flow's `scale-fonts` action detects the terminal from
+`TERM_PROGRAM`. Run `bin/scale-agent-fonts` directly with `--terminal ghostty`
+or `--terminal iterm2` to override detection. Re-run it after changing your
+primary font.
 
-```bash
-herdr plugin action invoke scale-fonts --plugin herdr-theme-cobalt2
-```
+Ghostty marks are grown to fill the two-cell box granted to a symbol followed
+by a blank cell. Pass `--width-cells` or `--height-fill` to make them smaller.
 
-Then restart the terminal, which caches font faces. The action detects the terminal from `TERM_PROGRAM`; pass `--terminal ghostty` or `--terminal iterm2` to the script directly to override it. Re-run it after you change your primary font.
-
-**Ghostty** also needs the codepoint map in `~/.config/ghostty/config`:
-
-```conf
-font-family = "JetBrainsMono Nerd Font"
-font-family = "Herdr Harness Logos"
-font-codepoint-map = U+E1A0-U+E1A8="Herdr Harness Logos"
-```
-
-Marks are grown to fill the two-cell box Ghostty grants a symbol followed by a blank cell. Pass `--width-cells` or `--height-fill` to make them smaller.
-
-**iTerm2** gets a merged family, `MesloLGS NF Herdr`, built from your pristine MesloLGS NF faces; set your profile font to it afterwards. MesloLGS NF predates the Nerd Font codicon expansion and is missing five of the borrowed marks, so those are pulled from a donor Nerd Font automatically.
+iTerm2's generated family also receives Nerd Font marks missing from the
+pristine MesloLGS NF faces; the donor is resolved from the primary Nerd Font.
+Pass `--cap-fill` or `--width-fill` to tune their size.
 
 The font tool needs `fontTools`, which it installs into a venv under the plugin's state directory on first run.
 
