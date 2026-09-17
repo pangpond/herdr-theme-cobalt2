@@ -27,6 +27,7 @@ PLUGIN_STATE = Path(
 )
 THEME_BACKUP = PLUGIN_STATE / "theme-block.bak.toml"
 SIDEBAR_BACKUP = PLUGIN_STATE / "sidebar-agents-block.bak.toml"
+SPACES_BACKUP = PLUGIN_STATE / "sidebar-spaces-block.bak.toml"
 
 # Replace [theme] through nested [theme.*] until the next unrelated section.
 THEME_SECTION_RE = re.compile(r"(?ms)^\[theme\]\n.*?(?=^\[(?!theme(?:\.|\]))[^\]]+\]\n|\Z)")
@@ -37,6 +38,11 @@ SIDEBAR_SECTION_RE = re.compile(
     r"(?ms)^\[ui\.sidebar\.agents\]\n.*?"
     r"(?=^\[\[|^\[(?!ui\.sidebar\.agents(?:\.|\]))[^\]]+\]\n|\Z)"
 )
+SPACES_SECTION_RE = re.compile(
+    r"(?ms)^\[ui\.sidebar\.spaces\]\n.*?"
+    r"(?=^\[\[|^\[(?!ui\.sidebar\.spaces(?:\.|\]))[^\]]+\]\n|\Z)"
+)
+
 
 MANAGED_BY = "# Managed by Herdr plugin: herdr-theme-cobalt2"
 
@@ -101,6 +107,15 @@ SIDEBAR_TAIL_ROWS = [
     '[{ token = "$context", fg = "#82a7bd" }]',
 ]
 
+#: Spaces rows: icon and label, then the branch line under it.
+SPACES_ROWS = [
+    (
+        '[{ token = "$cobalt2_space" }, '
+        '{ token = "workspace", fg = "#ffc600", bold = true }]'
+    ),
+    '[{ token = "branch", fg = "#82a7bd" }, { token = "git_status", fg = "#ff9d00" }]',
+]
+
 
 def herdr_bin() -> str:
     return os.environ.get("HERDR_BIN_PATH") or "herdr"
@@ -162,7 +177,23 @@ def render_sidebar_block() -> str:
         "row_gap = 0",
         "rows = [",
         *first_row,
+        '  [{ token = "state_text", fg = "#82a7bd", dim = true }],',
         *(f"  {row}," for row in SIDEBAR_TAIL_ROWS),
+        "]",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
+def render_spaces_block() -> str:
+    lines = [
+        "[ui.sidebar.spaces]",
+        MANAGED_BY,
+        "# $cobalt2_space is reported by bin/space-marks in this plugin.",
+        "# Choose icons with the space-icons action, or edit [space_icons] in",
+        "# this plugin's config.toml.",
+        "row_gap = 0",
+        "rows = [",
+        *(f"  {row}," for row in SPACES_ROWS),
         "]",
     ]
     return "\n".join(lines) + "\n\n"
@@ -246,7 +277,11 @@ def backup_current() -> None:
         return
     text = HERDR_CONFIG.read_text()
     PLUGIN_STATE.mkdir(parents=True, exist_ok=True)
-    for pattern, path in ((THEME_SECTION_RE, THEME_BACKUP), (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP)):
+    for pattern, path in (
+        (THEME_SECTION_RE, THEME_BACKUP),
+        (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP),
+        (SPACES_SECTION_RE, SPACES_BACKUP),
+    ):
         block = extract_section(text, pattern)
         if block is not None and MANAGED_BY in block:
             # Already our own output. Re-applying must not overwrite the user's
@@ -268,16 +303,16 @@ def reload_herdr() -> None:
 
 
 def refresh_marks() -> None:
-    """Report $cobalt2_logo for panes that already exist.
+    """Report $cobalt2_logo and $cobalt2_space for what already exists.
 
-    Without this, marks would only appear on the next pane.agent_detected event.
+    Without this, marks would only appear on the next pane or workspace event.
     """
-    script = Path(__file__).resolve().parent / "agent-marks"
-    subprocess.run(
-        [sys.executable, str(script)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    for name in ("agent-marks", "space-marks"):
+        subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent / name)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def notify(message: str) -> None:
@@ -294,6 +329,7 @@ def apply_theme() -> str:
         [
             (THEME_SECTION_RE, render_theme_block()),
             (SIDEBAR_SECTION_RE, render_sidebar_block()),
+            (SPACES_SECTION_RE, render_spaces_block()),
         ]
     )
     refresh_marks()
@@ -311,6 +347,7 @@ def restore_theme() -> str:
         for pattern, path in (
             (THEME_SECTION_RE, THEME_BACKUP),
             (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP),
+            (SPACES_SECTION_RE, SPACES_BACKUP),
         )
         if path.is_file()
     ]

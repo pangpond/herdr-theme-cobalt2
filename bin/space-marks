@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Report a user-chosen icon for every Herdr space, as a sidebar token.
+
+Herdr has no picker for space icons: `[ui.sidebar.spaces]` renders a `$name`
+token, and workspace metadata only lives in the running server. This script
+owns both halves of that gap.
+
+- The choice is the user's, kept in the plugin's own config directory under a
+  `[space_icons]` table keyed by space label. `bin/space-icon-picker` writes
+  that table interactively; editing it by hand works identically.
+- The reported token is `$cobalt2_space`, re-reported from the plugin's startup
+  hook and on workspace events, because metadata is lost when the server
+  restarts.
+
+Labels are matched case-insensitively, since Herdr accepts any label and a
+space renamed to "Next" should keep the icon chosen for "next". A `default`
+entry covers spaces with no entry of their own; without one they report no
+icon at all.
+
+Stdlib only, and no tomllib: Herdr runs plugin commands with a minimal PATH,
+and /usr/bin/python3 is still 3.9 on macOS.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+TOKEN_NAME = "cobalt2_space"
+DEFAULT_SOURCE = "herdr-theme-cobalt2"
+SECTION = "space_icons"
+DEFAULT_KEY = "default"
+MANAGED_BY = "# Written by the herdr-theme-cobalt2 space icon picker."
+
+#: Matches the [space_icons] table up to the next table header.
+SECTION_RE = re.compile(
+    rf"(?ms)^\[{SECTION}\]\n.*?(?=^\[|\Z)",
+)
+ENTRY_RE = re.compile(
+    r'^\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>[A-Za-z0-9_.-]+))\s*=\s*"(?P<icon>[^"]*)"\s*$',
+    re.MULTILINE,
+)
+#: TOML bare keys; anything else has to be quoted when written back.
+BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def herdr_bin() -> str:
+    return os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def config_path() -> Path:
+    configured = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+    root = (
+        Path(configured)
+        if configured
+        else Path.home() / ".config/herdr/plugins/config/herdr-theme-cobalt2"
+    )
+    return root / "config.toml"
+
+
+def load_icons(path: Path | None = None) -> dict[str, str]:
+    """The user's label to icon mapping, lowercased keys."""
+    path = path or config_path()
+    if not path.is_file():
+        return {}
+    section = SECTION_RE.search(path.read_text())
+    if section is None:
+        return {}
+    icons: dict[str, str] = {}
+    for match in ENTRY_RE.finditer(section.group(0)):
+        key = match.group("quoted") or match.group("bare")
+        icons[key.strip().lower()] = match.group("icon")
+    return icons
+
+
+def render_section(icons: dict[str, str]) -> str:
+    def key_of(label: str) -> str:
+        return label if BARE_KEY_RE.match(label) else f'"{label}"'
+
+    # `default` first, then alphabetical, so hand edits stay predictable.
+    ordered = [DEFAULT_KEY] if DEFAULT_KEY in icons else []
+    ordered += sorted(label for label in icons if label != DEFAULT_KEY)
+    lines = [f"[{SECTION}]", MANAGED_BY]
+    lines += [f'{key_of(label)} = "{icons[label]}"' for label in ordered]
+    return "\n".join(lines) + "\n"
+
+
+def save_icons(icons: dict[str, str], path: Path | None = None) -> Path:
+    """Rewrite only the [space_icons] table, leaving other keys alone."""
+    path = path or config_path()
+    original = path.read_text() if path.is_file() else ""
+    if not icons:
+        updated = SECTION_RE.sub("", original).rstrip("\n")
+        updated = f"{updated}\n" if updated else ""
+    elif SECTION_RE.search(original):
+        block = render_section(icons)
+        updated = SECTION_RE.sub(lambda _: block + "\n", original, count=1).rstrip("\n") + "\n"
+    else:
+        head = original.rstrip("\n")
+        updated = (f"{head}\n\n" if head else "") + render_section(icons)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(updated)
+    tmp.replace(path)
+    return path
+
+
+def icon_for(label: str | None, icons: dict[str, str]) -> str | None:
+    if label is None:
+        return icons.get(DEFAULT_KEY) or None
+    chosen = icons.get(label.strip().lower(), icons.get(DEFAULT_KEY, ""))
+    return chosen or None
+
+
+def run_herdr(*args: str) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            [herdr_bin(), *args], check=False, capture_output=True, text=True
+        )
+    except OSError as error:
+        raise ConfigError(f"could not run {herdr_bin()}: {error}") from error
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise ConfigError(message or f"herdr exited with status {result.returncode}")
+    if not result.stdout.strip():
+        return {}
+    return json.loads(result.stdout)
+
+
+def spaces() -> list[tuple[str, str]]:
+    """(workspace id, label) for every current space."""
+    workspaces = run_herdr("workspace", "list").get("result", {}).get("workspaces", [])
+    return [
+        (space["workspace_id"], space.get("label") or "")
+        for space in workspaces
+        if isinstance(space, dict) and isinstance(space.get("workspace_id"), str)
+    ]
+
+
+def event_workspace() -> str | None:
+    """Workspace id from the event envelope, when invoked as a hook."""
+    raw = os.environ.get("HERDR_PLUGIN_EVENT_JSON")
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    event = payload.get("event", payload) if isinstance(payload, dict) else {}
+    return _find(event, "workspace_id")
+
+
+def _find(value: Any, key: str) -> str | None:
+    """Depth-first search for a string field; envelopes nest inconsistently."""
+    if isinstance(value, dict):
+        found = value.get(key)
+        if isinstance(found, str):
+            return found
+        for child in value.values():
+            found = _find(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def report(source: str, workspace_id: str, icon: str | None) -> None:
+    args = ["workspace", "report-metadata", workspace_id, "--source", source]
+    if icon is None:
+        # Clear, so removing an entry removes the icon instead of leaving the
+        # last reported one behind.
+        args += ["--clear-token", TOKEN_NAME]
+    else:
+        args += ["--token", f"{TOKEN_NAME}={icon}"]
+    run_herdr(*args)
+
+
+def resolve_label(workspace_id: str, known: dict[str, str]) -> str | None:
+    if workspace_id in known:
+        return known[workspace_id]
+    space = run_herdr("workspace", "get", workspace_id).get("result", {}).get("workspace", {})
+    label = space.get("label")
+    return label if isinstance(label, str) else None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--set",
+        metavar="LABEL=ICON",
+        action="append",
+        default=[],
+        help="choose an icon for a space label; LABEL=default sets the fallback",
+    )
+    parser.add_argument(
+        "--unset", metavar="LABEL", action="append", default=[], help="drop a label's icon"
+    )
+    parser.add_argument("--workspace", help="report one space instead of every space")
+    parser.add_argument(
+        "--list", action="store_true", help="print the configured icons and exit"
+    )
+    args = parser.parse_args()
+
+    icons = load_icons()
+    if args.set or args.unset:
+        for pair in args.set:
+            label, separator, icon = pair.partition("=")
+            if not separator or not label.strip():
+                raise ConfigError(f"expected LABEL=ICON, got {pair!r}")
+            icons[label.strip().lower()] = icon.strip()
+        for label in args.unset:
+            icons.pop(label.strip().lower(), None)
+        icons = {label: icon for label, icon in icons.items() if icon}
+        print(f"space icons: wrote {save_icons(icons)}")
+
+    if args.list:
+        for label in sorted(icons):
+            print(f"{label}\t{icons[label]}")
+        return 0
+
+    source = os.environ.get("HERDR_PLUGIN_ID") or DEFAULT_SOURCE
+    known = dict(spaces())
+    if args.workspace:
+        targets = [(args.workspace, resolve_label(args.workspace, known))]
+    else:
+        event = event_workspace()
+        targets = (
+            [(event, resolve_label(event, known))] if event else list(known.items())
+        )
+
+    marked = 0
+    for workspace_id, label in targets:
+        icon = icon_for(label, icons)
+        report(source, workspace_id, icon)
+        marked += icon is not None
+    print(f"space icons: {marked} of {len(targets)} space(s) marked")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except ConfigError as error:
+        print(f"space-marks: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

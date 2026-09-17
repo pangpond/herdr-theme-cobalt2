@@ -53,9 +53,10 @@ Restart the terminal after changing its font configuration.
 ## What it does
 
 - Writes a Cobalt2 `[theme]` / `[theme.custom]` block into `~/.config/herdr/config.toml`
-- Writes `[ui.sidebar.agents]` rows that show a per-harness mark, the pane title, and the [Agent Usage](https://github.com/moneycaringcoder/herdr-agent-usage) tokens when that plugin is installed
-- Reports the `$cobalt2_logo` token for every pane, covering all 21 harnesses Herdr recognizes
-- Backs up your previous `[theme]` and `[ui.sidebar.agents]` blocks before the first apply
+- Writes `[ui.sidebar.agents]` rows that show a per-harness mark, the pane title, the lifecycle state, and the [Agent Usage](https://github.com/moneycaringcoder/herdr-agent-usage) tokens when that plugin is installed
+- Writes `[ui.sidebar.spaces]` rows that show a per-space icon you pick, the space name, and its branch
+- Reports `$cobalt2_logo` for every pane and `$cobalt2_space` for every space
+- Backs up your previous `[theme]`, `[ui.sidebar.agents]`, and `[ui.sidebar.spaces]` blocks before the first apply
 - Validates the rendered config with `herdr config check` **before** writing, then reloads Herdr
 
 It recolors **Herdr UI chrome** only. Terminal cell and ANSI colors still come from your terminal emulator. For the classic Cobalt2 terminal look, also install Wes Bos's iTerm preset from [`cobalt2-iterm`](https://github.com/wesbos/cobalt2-iterm).
@@ -79,6 +80,40 @@ To use ASCII marks instead of glyphs, or none at all, put this in the plugin's c
 ```toml
 marks = "text"  # or "none"
 ```
+
+## Space icons
+
+Each space row can carry its own icon. Herdr has no icon picker, and workspace
+metadata only lives in the running server, so this plugin owns the choice and
+re-reports it on startup and on `workspace.created` / `workspace.renamed`.
+
+Pick one with `prefix+shift+i`, or:
+
+```bash
+herdr plugin action invoke space-icons --plugin herdr-theme-cobalt2
+```
+
+That opens a popup listing 24 icons; typing any other character uses it
+instead, and `0` clears the space's icon. The choice is keyed by space label,
+matched case-insensitively, and stored in the plugin's own config directory:
+
+```toml
+[space_icons]
+default = "🗂"
+herdr = "🚀"
+"ramen-pipeline" = "🍜"
+```
+
+Editing that table by hand works the same way; `default` covers spaces with no
+entry of their own. The same mapping is scriptable:
+
+```bash
+python3 bin/space-marks --set "herdr=🚀" --unset old-space
+python3 bin/space-marks --list
+```
+
+Emoji occupy two cells. A Nerd Font glyph stays one cell wide if you want the
+labels to line up exactly.
 
 ## Sizing the marks
 
@@ -131,6 +166,12 @@ herdr plugin action invoke restore --plugin herdr-theme-cobalt2
 
 # Re-report marks for current panes
 herdr plugin action invoke refresh-marks --plugin herdr-theme-cobalt2
+
+# Re-report space icons for current spaces
+herdr plugin action invoke refresh-space-icons --plugin herdr-theme-cobalt2
+
+# Pick a space icon in a popup
+herdr plugin action invoke space-icons --plugin herdr-theme-cobalt2
 
 # Rebuild the logo font for this terminal
 herdr plugin action invoke scale-fonts --plugin herdr-theme-cobalt2

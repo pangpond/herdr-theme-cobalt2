@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Pick a space icon interactively, from a Herdr popup pane.
+
+Runs as the plugin's `picker` pane entrypoint. The popup is a real terminal,
+so this is a plain numbered prompt rather than a rendered menu: it reads one
+line, writes the choice into the user's plugin config through bin/space-marks,
+and re-reports the token so the sidebar updates without a restart.
+
+The space is taken from the invocation context when Herdr supplies one, which
+is the normal case for a popup opened over a focused space. Otherwise every
+space is listed and the user picks one first.
+
+Stdlib only.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+SPACE_MARKS = BIN / "space-marks"
+
+#: Offered choices. The user is not limited to these: "other" takes any text,
+#: so a Nerd Font glyph or a short label works too.
+ICONS = (
+    "🚀", "🎮", "🍜", "🧪", "📦", "🛠", "🔥", "🌊",
+    "🧠", "🐳", "🌱", "📚", "🎨", "🔒", "⚡️", "🛰",
+    "🐧", "🍩", "🧩", "📈", "🗂", "🎯", "☕️", "🦀",
+)
+COLUMNS = 8
+
+
+def herdr_bin() -> str:
+    return os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def run_json(*args: str) -> dict:
+    result = subprocess.run(
+        [herdr_bin(), *args], check=False, capture_output=True, text=True
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    return json.loads(result.stdout)
+
+
+def spaces() -> list[tuple[str, str]]:
+    workspaces = run_json("workspace", "list").get("result", {}).get("workspaces", [])
+    return [
+        (space["workspace_id"], space.get("label") or space["workspace_id"])
+        for space in workspaces
+        if isinstance(space, dict) and isinstance(space.get("workspace_id"), str)
+    ]
+
+
+def context_workspace() -> str | None:
+    workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
+    if workspace_id:
+        return workspace_id
+    raw = os.environ.get("HERDR_PLUGIN_CONTEXT_JSON")
+    if not raw:
+        return None
+    context = json.loads(raw)
+    value = context.get("workspace_id") if isinstance(context, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def prompt(message: str) -> str:
+    print(message, end="", flush=True)
+    line = sys.stdin.readline()
+    if not line:
+        raise SystemExit(0)
+    return line.strip()
+
+
+def choose_space() -> tuple[str, str]:
+    available = spaces()
+    if not available:
+        raise SystemExit("space-icon-picker: no spaces to configure")
+    wanted = context_workspace()
+    for workspace_id, label in available:
+        if workspace_id == wanted:
+            return workspace_id, label
+
+    print("spaces:")
+    for index, (workspace_id, label) in enumerate(available, start=1):
+        print(f"  {index:2}. {label}  ({workspace_id})")
+    answer = prompt("\nspace number: ")
+    if not answer.isdigit() or not 1 <= int(answer) <= len(available):
+        raise SystemExit("space-icon-picker: not a listed space number")
+    return available[int(answer) - 1]
+
+
+def choose_icon(label: str) -> str | None:
+    """The chosen icon, or None to clear this space's icon."""
+    print(f"icon for space: {label}\n")
+    for offset in range(0, len(ICONS), COLUMNS):
+        row = ICONS[offset : offset + COLUMNS]
+        print(
+            "  "
+            + "   ".join(f"{offset + index + 1:2}.{icon}" for index, icon in enumerate(row))
+        )
+    print("\n   0. none (clear this space's icon)")
+    answer = prompt("\nicon number, or type any character/glyph: ")
+    if not answer:
+        raise SystemExit(0)
+    if answer == "0":
+        return None
+    if answer.isdigit():
+        index = int(answer)
+        if not 1 <= index <= len(ICONS):
+            raise SystemExit("space-icon-picker: not a listed icon number")
+        return ICONS[index - 1]
+    return answer
+
+
+def apply(label: str, workspace_id: str, icon: str | None) -> None:
+    argument = ["--unset", label] if icon is None else ["--set", f"{label}={icon}"]
+    result = subprocess.run(
+        [sys.executable, str(SPACE_MARKS), *argument, "--workspace", workspace_id],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    sys.stdout.write(result.stdout)
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "space-marks failed")
+
+
+def open_pane() -> int:
+    """Open this script's own popup pane, for the keybinding and action."""
+    result = subprocess.run(
+        [
+            herdr_bin(),
+            "plugin",
+            "pane",
+            "open",
+            "--plugin",
+            os.environ.get("HERDR_PLUGIN_ID") or "herdr-theme-cobalt2",
+            "--entrypoint",
+            "space-icons",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or "could not open the picker popup")
+    return 0
+
+
+def main() -> int:
+    if "--open" in sys.argv[1:]:
+        return open_pane()
+    workspace_id, label = choose_space()
+    icon = choose_icon(label)
+    apply(label, workspace_id, icon)
+    shown = icon or "none"
+    print(f"\n{label}: {shown}")
+    print("press enter to close")
+    sys.stdin.readline()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

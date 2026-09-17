@@ -156,6 +156,72 @@ class SidebarBlockTest(unittest.TestCase):
         )
         self.assertIn("\\uE1A0", result)
 
+    def test_spaces_block_renders_icon_and_branch_rows(self):
+        parsed = tomllib.loads(self.apply.render_spaces_block())
+        rows = parsed["ui"]["sidebar"]["spaces"]["rows"]
+        self.assertEqual(rows[0][0]["token"], "$cobalt2_space")
+        self.assertEqual(rows[0][1]["token"], "workspace")
+        self.assertEqual([token["token"] for token in rows[1]], ["branch", "git_status"])
+
+    def test_spaces_regex_replaces_only_its_own_section(self):
+        config = (
+            '[ui.sidebar.agents]\nrows = [["agent"]]\n\n'
+            '[ui.sidebar.spaces]\nrows = [["workspace"]]\n\n'
+            '[[keys.command]]\nkey = "prefix+x"\n'
+        )
+        result = self.apply.update_section(
+            config, self.apply.SPACES_SECTION_RE, self.apply.render_spaces_block()
+        )
+        self.assertIn('rows = [["agent"]]', result)
+        self.assertIn("$cobalt2_space", result)
+        self.assertIn("[[keys.command]]", result)
+        tomllib.loads(result)
+
+
+class SpaceIconStoreTest(unittest.TestCase):
+    """The user's own choices live in the plugin config directory."""
+
+    def setUp(self):
+        self.marks = load_script("space-marks")
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.config = self.tmp / "config.toml"
+
+    def test_round_trips_labels_that_need_quoting(self):
+        self.marks.save_icons({"default": "🗂", "ramen-pipeline": "🍜", "av japan": "🎮"}, self.config)
+        tomllib.loads(self.config.read_text())
+        self.assertEqual(
+            self.marks.load_icons(self.config),
+            {"default": "🗂", "ramen-pipeline": "🍜", "av japan": "🎮"},
+        )
+
+    def test_writing_icons_keeps_unrelated_config(self):
+        """The same file holds the marks variant users may already have set."""
+        self.config.write_text('marks = "text"\n')
+        self.marks.save_icons({"herdr": "🚀"}, self.config)
+        parsed = tomllib.loads(self.config.read_text())
+        self.assertEqual(parsed["marks"], "text")
+        self.assertEqual(parsed["space_icons"]["herdr"], "🚀")
+
+    def test_rewriting_replaces_rather_than_appends(self):
+        self.marks.save_icons({"herdr": "🚀"}, self.config)
+        self.marks.save_icons({"herdr": "🎯"}, self.config)
+        self.assertEqual(self.config.read_text().count("[space_icons]"), 1)
+        self.assertEqual(self.marks.load_icons(self.config), {"herdr": "🎯"})
+
+    def test_clearing_every_icon_drops_the_table(self):
+        self.config.write_text('marks = "text"\n')
+        self.marks.save_icons({"herdr": "🚀"}, self.config)
+        self.marks.save_icons({}, self.config)
+        self.assertNotIn("space_icons", self.config.read_text())
+        self.assertEqual(tomllib.loads(self.config.read_text())["marks"], "text")
+
+    def test_label_lookup_ignores_case_and_falls_back(self):
+        icons = {"herdr": "🚀", "default": "🗂"}
+        self.assertEqual(self.marks.icon_for("Herdr", icons), "🚀")
+        self.assertEqual(self.marks.icon_for("unknown", icons), "🗂")
+        self.assertIsNone(self.marks.icon_for("unknown", {"herdr": "🚀"}))
+
 
 class FakeHerdr:
     """A stand-in `herdr` on PATH that records the calls made to it."""

@@ -1,6 +1,6 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.3.1"
+version = "0.4.0"
 # Agent row styling rules were verified against 0.9.0.
 min_herdr_version = "0.9.0"
 description = "Apply Wes Bos Cobalt2 colors to Herdr's UI, with a sized harness mark on every agent row."
@@ -14,6 +14,17 @@ command = ["python3", "bin/agent-marks"]
 [[events]]
 on = "pane.agent_detected"
 command = ["python3", "bin/agent-marks"]
+
+[[events]]
+on = "workspace.created"
+command = ["python3", "bin/space-marks"]
+
+[[events]]
+on = "workspace.renamed"
+command = ["python3", "bin/space-marks"]
+
+[[startup]]
+command = ["python3", "bin/space-marks"]
 
 [[actions]]
 id = "apply"
@@ -37,6 +48,28 @@ contexts = ["global"]
 command = ["python3", "bin/agent-marks"]
 
 [[actions]]
+id = "space-icons"
+title = "Space icons: pick"
+description = "Open a popup to choose the sidebar icon for a space."
+contexts = ["global", "workspace"]
+command = ["python3", "bin/space-icon-picker", "--open"]
+
+[[actions]]
+id = "refresh-space-icons"
+title = "Space icons: refresh"
+description = "Re-report the chosen icon for every current space."
+contexts = ["global"]
+command = ["python3", "bin/space-marks"]
+
+[[panes]]
+id = "space-icons"
+title = "Pick a space icon"
+placement = "popup"
+width = 62
+height = 16
+command = ["python3", "bin/space-icon-picker"]
+
+[[actions]]
 id = "scale-fonts"
 title = "Agent marks: resize for this terminal"
 description = "Install and configure agent mark fonts for Ghostty, iTerm2, or Foot. Restart the terminal afterwards."
@@ -48,3 +81,9 @@ key = "prefix+shift+c"
 type = "plugin_action"
 command = "herdr-theme-cobalt2.apply"
 description = "apply Cobalt2 theme"
+
+[[keys.command]]
+key = "prefix+shift+i"
+type = "plugin_action"
+command = "herdr-theme-cobalt2.space-icons"
+description = "pick a space icon"
