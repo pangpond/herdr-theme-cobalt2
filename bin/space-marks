@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +33,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
+import cobalt2_config  # noqa: E402
 import cobalt2_marks  # noqa: E402
 
 TOKEN_NAME = "cobalt2_space"
@@ -41,17 +41,6 @@ DEFAULT_SOURCE = "herdr-theme-cobalt2"
 SECTION = "space_icons"
 DEFAULT_KEY = "default"
 MANAGED_BY = "# Written by the herdr-theme-cobalt2 space icon picker."
-
-#: Matches the [space_icons] table up to the next table header.
-SECTION_RE = re.compile(
-    rf"(?ms)^\[{SECTION}\]\n.*?(?=^\[|\Z)",
-)
-ENTRY_RE = re.compile(
-    r'^\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>[A-Za-z0-9_.-]+))\s*=\s*"(?P<icon>[^"]*)"\s*$',
-    re.MULTILINE,
-)
-#: TOML bare keys; anything else has to be quoted when written back.
-BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class ConfigError(RuntimeError):
@@ -63,54 +52,19 @@ def herdr_bin() -> str:
 
 
 def config_path() -> Path:
-    return cobalt2_marks.plugin_config_path()
+    return cobalt2_config.config_path()
 
 
 def load_icons(path: Path | None = None) -> dict[str, str]:
     """The user's label to icon mapping, lowercased keys."""
-    path = path or config_path()
-    if not path.is_file():
-        return {}
-    section = SECTION_RE.search(path.read_text())
-    if section is None:
-        return {}
-    icons: dict[str, str] = {}
-    for match in ENTRY_RE.finditer(section.group(0)):
-        key = match.group("quoted") or match.group("bare")
-        icons[key.strip().lower()] = match.group("icon")
-    return icons
-
-
-def render_section(icons: dict[str, str]) -> str:
-    def key_of(label: str) -> str:
-        return label if BARE_KEY_RE.match(label) else f'"{label}"'
-
-    # `default` first, then alphabetical, so hand edits stay predictable.
-    ordered = [DEFAULT_KEY] if DEFAULT_KEY in icons else []
-    ordered += sorted(label for label in icons if label != DEFAULT_KEY)
-    lines = [f"[{SECTION}]", MANAGED_BY]
-    lines += [f'{key_of(label)} = "{icons[label]}"' for label in ordered]
-    return "\n".join(lines) + "\n"
+    return cobalt2_config.load_table(SECTION, path)
 
 
 def save_icons(icons: dict[str, str], path: Path | None = None) -> Path:
     """Rewrite only the [space_icons] table, leaving other keys alone."""
-    path = path or config_path()
-    original = path.read_text() if path.is_file() else ""
-    if not icons:
-        updated = SECTION_RE.sub("", original).rstrip("\n")
-        updated = f"{updated}\n" if updated else ""
-    elif SECTION_RE.search(original):
-        block = render_section(icons)
-        updated = SECTION_RE.sub(lambda _: block + "\n", original, count=1).rstrip("\n") + "\n"
-    else:
-        head = original.rstrip("\n")
-        updated = (f"{head}\n\n" if head else "") + render_section(icons)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(updated)
-    tmp.replace(path)
-    return path
+    return cobalt2_config.save_table(
+        SECTION, icons, path, header=MANAGED_BY, first_key=DEFAULT_KEY
+    )
 
 
 def icon_for(label: str | None, icons: dict[str, str]) -> str | None:

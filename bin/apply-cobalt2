@@ -95,12 +95,16 @@ TOKEN_ORDER = [
     "peach",
 ]
 
-# Rows after the first assume the Agent Usage (usagebar) plugin. Herdr hides
-# tokens nobody reports, so these rows simply collapse when it is absent.
-SIDEBAR_TAIL_ROWS = [
-    '[{ token = "$provider", fg = "#9effff" }, { token = "$limit", fg = "#d6deeb" }]',
-    '[{ token = "$context", fg = "#82a7bd" }]',
-]
+# One detail row under the headline. state_text is Herdr's own lifecycle label;
+# the rest come from the Agent Usage (usagebar) plugin, and Herdr hides tokens
+# nobody reports, so the row shrinks to the lifecycle label when it is absent.
+# Kept to a single row on purpose: two content rows plus symmetric padding is
+# four terminal rows, the smallest balanced entry Herdr's grid allows.
+SIDEBAR_DETAIL_ROW = (
+    '[{ token = "state_text", fg = "#82a7bd", dim = true }, '
+    '{ token = "$limit", fg = "#d6deeb" }, '
+    '{ token = "$context", fg = "#82a7bd" }]'
+)
 
 #: Spaces rows: icon and label, then the branch line under it.
 SPACES_ROWS = [
@@ -179,8 +183,7 @@ def render_sidebar_block() -> str:
         "rows = [",
         f"  {PAD_ROW_ABOVE},",
         *first_row,
-        '  [{ token = "state_text", fg = "#82a7bd", dim = true }],',
-        *(f"  {row}," for row in SIDEBAR_TAIL_ROWS),
+        f"  {SIDEBAR_DETAIL_ROW},",
         f"  {PAD_ROW_BELOW},",
         "]",
     ]

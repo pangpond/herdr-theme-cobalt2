@@ -25,6 +25,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
+import cobalt2_config  # noqa: E402
 import cobalt2_marks  # noqa: E402
 
 TOKEN_NAME = "cobalt2_logo"
@@ -76,16 +77,90 @@ def configured_variant(explicit: str | None) -> str:
     return variant
 
 
-def mark_for(agent: str | None, variant: str) -> str | None:
-    if agent is None or variant == "none":
+def canonical(agent: str | None, cache: dict[str, str]) -> str | None:
+    """The MARKS key to paint for an agent id.
+
+    The hand-curated table wins. A resolved verdict from the plugin's config
+    covers ids the table has never heard of, which is every harness Herdr
+    learns about between releases.
+    """
+    if agent is None:
+        return None
+    if agent in cobalt2_marks.MARKS:
+        return agent
+    resolved = cache.get(agent.strip().lower())
+    if resolved and resolved in cobalt2_marks.MARKS:
+        return resolved
+    return None
+
+
+def resolve_unknown(
+    targets: list[tuple[str, str | None]], cache: dict[str, str]
+) -> dict[str, str]:
+    """Ask TypeSafe about every agent id neither the table nor the cache covers.
+
+    Imported here so the hook path never pays for it. Every failure is soft:
+    an unresolved id keeps today's behavior of an empty logo column.
+    """
+    import cobalt2_resolve  # noqa: PLC0415
+
+    unknown = sorted(
+        {
+            agent.strip().lower()
+            for _, agent in targets
+            if agent
+            and agent not in cobalt2_marks.MARKS
+            and agent.strip().lower() not in cache
+        }
+    )
+    if not unknown:
+        return cache
+
+    updated = dict(cache)
+    for agent in unknown:
+        try:
+            verdict = cobalt2_resolve.resolve(agent)
+        except cobalt2_resolve.ResolveError as error:
+            print(f"agent-marks: could not resolve {agent!r}: {error}", file=sys.stderr)
+            continue
+        keep = verdict.cacheable
+        print(
+            f"resolved {agent!r} -> {verdict.choice} "
+            f"(confidence {verdict.confidence:.2f}, agent {verdict.is_agent:.2f})"
+            + ("" if keep else "; too uncertain to keep")
+        )
+        if keep:
+            updated[agent] = keep
+    if updated != cache:
+        path = cobalt2_config.save_table(
+            cobalt2_config.AGENT_MARKS_SECTION,
+            updated,
+            header=cobalt2_config.AGENT_MARKS_HEADER,
+        )
+        print(f"cached {len(updated) - len(cache)} verdict(s) in {path}")
+    return updated
+
+
+def mark_for(agent: str | None, variant: str, cache: dict[str, str]) -> str | None:
+    if variant == "none":
+        return None
+    key = canonical(agent, cache)
+    if key is None:
         return None
     if variant == "text":
-        return cobalt2_marks.text_fallback(agent)
-    return cobalt2_marks.glyph(agent)
+        return cobalt2_marks.text_fallback(key)
+    return cobalt2_marks.glyph(key)
 
 
-def report(source: str, pane_id: str, agent: str | None, variant: str, padding: int) -> str | None:
-    mark = mark_for(agent, variant)
+def report(
+    source: str,
+    pane_id: str,
+    agent: str | None,
+    variant: str,
+    padding: int,
+    cache: dict[str, str],
+) -> str | None:
+    mark = mark_for(agent, variant, cache)
     args = ["pane", "report-metadata", pane_id, "--source", source]
     if mark is None:
         # Clear rather than leave a stale mark when a pane's agent changes to
@@ -138,6 +213,12 @@ def main() -> int:
     parser.add_argument("--variant", choices=VARIANTS, help="override the configured variant")
     parser.add_argument("--pane", help="report a single pane instead of every pane")
     parser.add_argument("--agent", help="agent id for --pane; omit to clear the token")
+    parser.add_argument(
+        "--resolve-unknown",
+        action="store_true",
+        help="ask TypeSafe which mark an unrecognized agent id should use, and "
+        "cache the answer; needs network and TYPESAFE_API_KEY",
+    )
     args = parser.parse_args()
 
     variant = configured_variant(args.variant)
@@ -150,9 +231,13 @@ def main() -> int:
         event = event_pane()
         targets = [event] if event else all_panes()
 
+    cache = cobalt2_config.load_table(cobalt2_config.AGENT_MARKS_SECTION)
+    if args.resolve_unknown:
+        cache = resolve_unknown(targets, cache)
+
     marked = 0
     for pane_id, agent in targets:
-        if report(source, pane_id, agent, variant, padding) is not None:
+        if report(source, pane_id, agent, variant, padding, cache) is not None:
             marked += 1
     print(f"cobalt2 marks: {marked} of {len(targets)} pane(s) marked (variant {variant})")
     return 0

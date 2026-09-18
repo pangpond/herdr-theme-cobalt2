@@ -7,6 +7,7 @@ Stdlib only, so this runs anywhere the plugin does:
 
 from __future__ import annotations
 
+import http.server
 import importlib.util
 import json
 import os
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import tomllib
 import unittest
 from pathlib import Path
@@ -21,7 +23,9 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 
+import cobalt2_config  # noqa: E402
 import cobalt2_marks  # noqa: E402
+import cobalt2_resolve  # noqa: E402
 
 BMP_PUA = range(0xE000, 0xF900)
 #: Stable assignments in this repository's bundled logo font.
@@ -177,6 +181,17 @@ class SidebarBlockTest(unittest.TestCase):
         self.assertIn("[[keys.command]]", result)
         tomllib.loads(result)
 
+    def test_agent_entry_is_two_content_rows_inside_padding(self):
+        """Four terminal rows total: the smallest balanced entry the grid allows."""
+        rows = tomllib.loads(self.apply.render_sidebar_block())["ui"]["sidebar"][
+            "agents"
+        ]["rows"]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(
+            [token["token"] for token in rows[2]],
+            ["state_text", "$limit", "$context"],
+        )
+
     def test_blocks_wrap_entries_in_padding_rows(self):
         """Padding rows are what give the active-row highlight breathing room."""
         for block, section in (
@@ -202,10 +217,12 @@ class RowPaddingTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.config = self.tmp / "config.toml"
 
-    def test_defaults_to_one_row_when_unset(self):
-        self.assertEqual(cobalt2_marks.configured_padding(self.config), 1)
+    def test_defaults_to_symmetric_padding_when_unset(self):
+        """Symmetric padding is the point; level 1 is an opt-in half height."""
+        self.assertEqual(cobalt2_marks.DEFAULT_PAD_LEVEL, 2)
+        self.assertEqual(cobalt2_marks.configured_padding(self.config), 2)
         self.config.write_text('marks = "font"\n')
-        self.assertEqual(cobalt2_marks.configured_padding(self.config), 1)
+        self.assertEqual(cobalt2_marks.configured_padding(self.config), 2)
 
     def test_reads_each_level(self):
         for level in cobalt2_marks.PAD_LEVELS:
@@ -321,13 +338,21 @@ class AgentMarksTest(unittest.TestCase):
 
     def run_marks(self, panes: list[dict], *args: str) -> tuple[subprocess.CompletedProcess, FakeHerdr]:
         fake = FakeHerdr(self.tmp, panes)
+        # Point the plugin config at a scratch directory. Unsetting it would
+        # fall back to ~/.config, making every assertion depend on whatever the
+        # developer running the suite has configured.
+        config_dir = self.tmp / "config"
+        config_dir.mkdir(exist_ok=True)
         env = {
             **os.environ,
             "PATH": f"{self.tmp}{os.pathsep}{os.environ['PATH']}",
             "HERDR_BIN_PATH": str(self.tmp / "herdr"),
+            "HERDR_PLUGIN_CONFIG_DIR": str(config_dir),
         }
+        # Never let the suite reach TypeSafe: resolution is covered by
+        # ResolveRequestTest against a local stub.
+        env.pop("TYPESAFE_API_KEY", None)
         env.pop("HERDR_PLUGIN_EVENT_JSON", None)
-        env.pop("HERDR_PLUGIN_CONFIG_DIR", None)
         result = subprocess.run(
             [sys.executable, str(PLUGIN_ROOT / "bin" / "agent-marks"), *args],
             capture_output=True,
@@ -404,6 +429,141 @@ class AgentMarksTest(unittest.TestCase):
             f"{cobalt2_marks.PAD_TOKEN_BELOW}={cobalt2_marks.PAD_GLYPH}", call
         )
 
+    def test_a_cached_verdict_paints_without_network_or_api_key(self):
+        """Resolution happens once; the hooks must stay offline forever after."""
+        config = self.tmp / "config"
+        config.mkdir(exist_ok=True)
+        (config / "config.toml").write_text(
+            f"[{cobalt2_config.AGENT_MARKS_SECTION}]\n"
+            f'aider = "{cobalt2_marks.GENERIC}"\n'
+        )
+        result, fake = self.run_marks([{"pane_id": "w1:p1", "agent": "aider"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.logo_arg(fake.calls()[-1]),
+            f"cobalt2_logo={cobalt2_marks.glyph(cobalt2_marks.GENERIC)}",
+        )
+
+    def test_a_cached_no_mark_leaves_the_column_empty(self):
+        """`none` records that the id was asked about and needs no mark."""
+        config = self.tmp / "config"
+        config.mkdir(exist_ok=True)
+        (config / "config.toml").write_text(
+            f"[{cobalt2_config.AGENT_MARKS_SECTION}]\n"
+            f'fish = "{cobalt2_config.NO_MARK}"\n'
+        )
+        result, fake = self.run_marks([{"pane_id": "w1:p1", "agent": "fish"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.logo_arg(fake.calls()[-1]), "cleared")
+
+
+class ResolvePolicyTest(unittest.TestCase):
+    """The risk policy applied to a raw TypeSafe answer, no network involved."""
+
+    def test_brands_describe_every_mark(self):
+        """An undescribed mark can never be chosen, so it must not exist."""
+        described = {
+            cobalt2_marks.MARKS[key].codepoint
+            for key in set(cobalt2_resolve.BRANDS) | {cobalt2_marks.GENERIC}
+        }
+        self.assertEqual(set(cobalt2_marks.codepoints()) - described, set())
+
+    def test_confidence_and_agency_gate_the_answer(self):
+        cases = (
+            ("a confident brand match is used", "claude", 0.99, 0.90, "claude"),
+            ("the same match below the floor is refused", "claude", 0.40, 0.90, None),
+            ("a non-agent gets no mark", cobalt2_resolve.NOT_AN_AGENT, 0.95, 0.20, None),
+            ("an unrecognized agent gets the generic mark", "generic", 0.90, 0.96, "generic"),
+            ("generic needs the id to be an agent", "generic", 0.90, 0.30, None),
+            ("an option outside the table is refused", "made_up", 0.99, 0.90, None),
+        )
+        for name, choice, confidence, is_agent, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(
+                    cobalt2_resolve._mark_for(choice, confidence, is_agent), expected
+                )
+
+    def test_a_non_agent_is_cached_so_it_is_asked_about_once(self):
+        verdict = cobalt2_resolve.Verdict(
+            mark=None, choice=cobalt2_resolve.NOT_AN_AGENT, confidence=0.95, is_agent=0.1
+        )
+        self.assertEqual(verdict.cacheable, cobalt2_config.NO_MARK)
+
+    def test_an_uncertain_answer_is_not_cached(self):
+        """Pinning a guess would stop a better answer from ever being asked for."""
+        verdict = cobalt2_resolve.Verdict(
+            mark=None, choice="claude", confidence=0.31, is_agent=0.9
+        )
+        self.assertIsNone(verdict.cacheable)
+
+
+class ResolveRequestTest(unittest.TestCase):
+    """The HTTP contract, served by a stub so the suite never leaves the host."""
+
+    def serve(self, status: int, body: dict | str):
+        received: dict = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length", 0))
+                received["body"] = json.loads(self.rfile.read(length))
+                received["auth"] = self.headers.get("Authorization")
+                payload = json.dumps(body) if isinstance(body, dict) else body
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload.encode())
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        # LIFO, so shutdown runs before the socket is closed.
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address[:2]
+        return received, {
+            "TYPESAFE_API_KEY": "test-key",
+            "TYPESAFE_ENDPOINT": f"http://{host}:{port}/v1/systemone",
+        }
+
+    def test_sends_the_agent_id_as_state_and_parses_the_answer(self):
+        received, env = self.serve(
+            200,
+            {
+                "model": "jev-latest",
+                "answers": {
+                    "mark": {
+                        "type": "choice",
+                        "choice": "copilot",
+                        "probabilities": {"copilot": 0.97},
+                        "confidence": 0.97,
+                    },
+                    "is_coding_agent": {"type": "noul", "noul": 0.93},
+                },
+            },
+        )
+        verdict = cobalt2_resolve.resolve("gh-copilot", env=env)
+        self.assertEqual(verdict.mark, "copilot")
+        self.assertEqual(received["auth"], "Bearer test-key")
+        self.assertEqual(received["body"]["state"], {"agent": {"id": "gh-copilot"}})
+        self.assertIn("mark", received["body"]["questions"])
+
+    def test_an_http_failure_is_recoverable(self):
+        _, env = self.serve(429, {"error": "slow down"})
+        with self.assertRaises(cobalt2_resolve.ResolveError):
+            cobalt2_resolve.resolve("aider", env=env)
+
+    def test_malformed_json_is_recoverable(self):
+        _, env = self.serve(200, "not json at all")
+        with self.assertRaises(cobalt2_resolve.ResolveError):
+            cobalt2_resolve.resolve("aider", env=env)
+
+    def test_a_missing_api_key_is_reported_not_raised_as_a_keyerror(self):
+        with self.assertRaises(cobalt2_resolve.ResolveError):
+            cobalt2_resolve.resolve("aider", env={})
 
 
 class GhosttyConfigTest(unittest.TestCase):

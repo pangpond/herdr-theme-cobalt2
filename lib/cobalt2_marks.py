@@ -61,6 +61,10 @@ def _nerd(codepoint: int, text: str, color: str) -> Mark:
     return Mark(codepoint, text, color, "nerd")
 
 
+#: Key of the fallback mark used when no branded mark applies.
+GENERIC = "generic"
+
+
 # Keyed by the agent id Herdr reports. Herdr's canonical ids and its runtime
 # names disagree in a few places (github_copilot vs copilot, open_code vs
 # opencode), so both spellings are present and resolve to the same mark.
@@ -96,6 +100,11 @@ MARKS: dict[str, Mark] = {
     "qwen-code": _nerd(0xE27F, "QWN", _BLUE),
     "qodercli": _nerd(0xEC19, "QOD", ACCENT),  # cod-chip
     "qoder": _nerd(0xEC19, "QOD", ACCENT),
+    # Fallback for a harness the table has no artwork for, assigned by
+    # lib/cobalt2_resolve.py. Not an id Herdr reports: it is a bucket. Kept on
+    # the accent so it costs no styling rule, which matters because
+    # rule_specs() is already at its budget.
+    GENERIC: _nerd(0xEB08, "AGT", ACCENT),  # cod-hubot, a generic robot
 }
 
 #: Herdr rejects config with more than 16 rules on a single token.
@@ -116,7 +125,7 @@ PAD_TOKEN_ABOVE = "cobalt2_pad_top"
 #: Plugin config key selecting the level: 0 none, 1 below only, 2 both.
 PAD_CONFIG_KEY = "row_padding"
 PAD_LEVELS = (0, 1, 2)
-DEFAULT_PAD_LEVEL = 1
+DEFAULT_PAD_LEVEL = 2
 
 
 def plugin_config_path() -> Path:

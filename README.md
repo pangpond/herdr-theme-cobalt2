@@ -53,9 +53,10 @@ Restart the terminal after changing its font configuration.
 ## What it does
 
 - Writes a Cobalt2 `[theme]` / `[theme.custom]` block into `~/.config/herdr/config.toml`
-- Writes `[ui.sidebar.agents]` rows that show a per-harness mark, the pane title, the lifecycle state, and the [Agent Usage](https://github.com/moneycaringcoder/herdr-agent-usage) tokens when that plugin is installed
+- Writes `[ui.sidebar.agents]` rows that show a per-harness mark, the pane title, and one detail row with the lifecycle state plus the [Agent Usage](https://github.com/moneycaringcoder/herdr-agent-usage) tokens when that plugin is installed
 - Writes `[ui.sidebar.spaces]` rows that show a per-space icon you pick, the space name, and its branch
 - Reports `$cobalt2_logo` for every pane and `$cobalt2_space` for every space
+- Resolves a mark for harnesses the table has no entry for, on request, and caches the verdict
 - Backs up your previous `[theme]`, `[ui.sidebar.agents]`, and `[ui.sidebar.spaces]` blocks before the first apply
 - Validates the rendered config with `herdr config check` **before** writing, then reloads Herdr
 
@@ -81,6 +82,42 @@ To use ASCII marks instead of glyphs, or none at all, put this in the plugin's c
 marks = "text"  # or "none"
 ```
 
+## Unrecognized harnesses
+
+`lib/cobalt2_marks.py` matches agent ids exactly, so a harness it has never
+heard of renders an empty logo column. Herdr learns about new harnesses faster
+than this table does, and its ids drift (`github_copilot` vs `copilot`,
+`open_code` vs `opencode`).
+
+`--resolve-unknown` closes that gap by asking [TypeSafe](https://typesafe.ai)
+which existing mark an unknown id should use:
+
+```bash
+export TYPESAFE_API_KEY=...
+python3 bin/agent-marks --resolve-unknown
+```
+
+One request per unknown id asks two questions at once: a Choice over every mark
+in the table plus a generic bucket and a "not an agent" option, and a Noul for
+whether the id names a coding agent at all. `claude-code` resolves to the
+Claude mark, `gh-copilot` to the Copilot glyph, `aider` to the generic agent
+mark at U+EB08, and `vim` to no mark.
+
+Answers below 0.6 confidence are refused and not cached, so an uncertain id
+keeps the empty column rather than being pinned to a guess. Verdicts land in
+the plugin's own config:
+
+```toml
+[agent_marks]
+aider = "generic"
+fish = "none"        # asked about, needs no mark
+```
+
+Editing that table by hand works identically, and an entry always beats
+inference. Everything after the first resolve is a local lookup: the startup
+and `pane.agent_detected` hooks never import the resolver, never open a socket,
+and keep working with no API key at all.
+
 ## Row padding
 
 Sidebar entries are padded so the active-row highlight is not flush against
@@ -89,12 +126,15 @@ so the padding is a row holding a braille blank (U+2800) that renders nothing.
 A terminal grid has no fraction of a row, so the levels are:
 
 ```toml
-row_padding = 1  # 0 none, 1 one row below (default), 2 one row above and below
+row_padding = 2  # 2 above and below (default), 1 below only, 0 none
 ```
 
-Level 2 is the smallest symmetric option and adds two rows per entry; level 1
-is half that height but sits below the entry only. Lowering the level clears
-the tokens it drops, so rows disappear without an apply.
+Level 2 is symmetric, which is why it is the default. Each agent entry is kept
+to two content rows — the mark headline plus one detail row carrying the
+lifecycle state, usage, and context — so a padded entry is four terminal rows
+in total, the smallest balanced entry Herdr's grid allows. Level 1 is half the
+padding height but sits below the entry only. Lowering the level clears the
+tokens it drops, so rows disappear without re-applying the theme.
 
 ## Space icons
 
