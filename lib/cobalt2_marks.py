@@ -21,6 +21,9 @@ packages, so this module must stay importable from that environment.
 
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
 from typing import NamedTuple
 
 HARNESS_FONT_FAMILY = "Herdr Harness Logos"
@@ -99,6 +102,65 @@ MARKS: dict[str, Mark] = {
 MAX_STYLE_RULES = 16
 #: Rules left unused, so the user can add their own without hitting the wall.
 RULE_HEADROOM = 2
+
+#: Braille blank, reported as the value of a padding token. Herdr drops
+#: whitespace-only metadata (a plain space and U+00A0 both vanish), so a blank
+#: row needs a glyph that is printable but draws nothing.
+PAD_GLYPH = "\u2800"
+#: Padding rows are separate tokens above and below an entry, so the level can
+#: choose one or both. A terminal grid has no fraction of a row: one row is the
+#: smallest step, which makes level 1 (below only) the half-height option and
+#: level 2 the smallest symmetric one.
+PAD_TOKEN_BELOW = "cobalt2_pad"
+PAD_TOKEN_ABOVE = "cobalt2_pad_top"
+#: Plugin config key selecting the level: 0 none, 1 below only, 2 both.
+PAD_CONFIG_KEY = "row_padding"
+PAD_LEVELS = (0, 1, 2)
+DEFAULT_PAD_LEVEL = 1
+
+
+def plugin_config_path() -> Path:
+    configured = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+    root = (
+        Path(configured)
+        if configured
+        else Path.home() / ".config/herdr/plugins/config/herdr-theme-cobalt2"
+    )
+    return root / "config.toml"
+
+
+def configured_padding(path: Path | None = None) -> int:
+    """Padding rows per sidebar entry: 0, 1 (below), or 2 (above and below).
+
+    Read with a regex rather than tomllib, which is absent from the Python 3.9
+    that /usr/bin/python3 still is on macOS.
+    """
+    path = path or plugin_config_path()
+    if not path.is_file():
+        return DEFAULT_PAD_LEVEL
+    match = re.search(
+        rf"^\s*{PAD_CONFIG_KEY}\s*=\s*(\d+)\s*$", path.read_text(), re.MULTILINE
+    )
+    if match is None:
+        return DEFAULT_PAD_LEVEL
+    level = int(match.group(1))
+    if level not in PAD_LEVELS:
+        raise ValueError(
+            f"invalid {PAD_CONFIG_KEY} {level} in {path}; expected 0, 1, or 2"
+        )
+    return level
+
+
+def pad_token_args(level: int) -> list[str]:
+    """`herdr report-metadata` arguments for the padding tokens.
+
+    Tokens the level excludes are cleared rather than skipped, so lowering the
+    level removes rows that were already reported.
+    """
+    args: list[str] = []
+    for token, needed in ((PAD_TOKEN_BELOW, level >= 1), (PAD_TOKEN_ABOVE, level >= 2)):
+        args += ["--token", f"{token}={PAD_GLYPH}"] if needed else ["--clear-token", token]
+    return args
 
 
 def glyph(agent: str) -> str | None:

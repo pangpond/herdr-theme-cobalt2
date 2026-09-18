@@ -116,6 +116,12 @@ SPACES_ROWS = [
     '[{ token = "branch", fg = "#82a7bd" }, { token = "git_status", fg = "#ff9d00" }]',
 ]
 
+#: Padding rows wrapping each sidebar entry. Herdr collapses a row whose only
+#: token nobody reports, so the level configured for bin/agent-marks and
+#: bin/space-marks decides how many of these actually render.
+PAD_ROW_ABOVE = f'[{{ token = "${cobalt2_marks.PAD_TOKEN_ABOVE}" }}]'
+PAD_ROW_BELOW = f'[{{ token = "${cobalt2_marks.PAD_TOKEN_BELOW}" }}]'
+
 
 def herdr_bin() -> str:
     return os.environ.get("HERDR_BIN_PATH") or "herdr"
@@ -176,9 +182,11 @@ def render_sidebar_block() -> str:
         "# $cobalt2_logo is reported by bin/agent-marks in this plugin.",
         "row_gap = 0",
         "rows = [",
+        f"  {PAD_ROW_ABOVE},",
         *first_row,
         '  [{ token = "state_text", fg = "#82a7bd", dim = true }],',
         *(f"  {row}," for row in SIDEBAR_TAIL_ROWS),
+        f"  {PAD_ROW_BELOW},",
         "]",
     ]
     return "\n".join(lines) + "\n\n"
@@ -193,7 +201,9 @@ def render_spaces_block() -> str:
         "# this plugin's config.toml.",
         "row_gap = 0",
         "rows = [",
+        f"  {PAD_ROW_ABOVE},",
         *(f"  {row}," for row in SPACES_ROWS),
+        f"  {PAD_ROW_BELOW},",
         "]",
     ]
     return "\n".join(lines) + "\n\n"

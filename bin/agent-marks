@@ -84,7 +84,7 @@ def mark_for(agent: str | None, variant: str) -> str | None:
     return cobalt2_marks.glyph(agent)
 
 
-def report(source: str, pane_id: str, agent: str | None, variant: str) -> str | None:
+def report(source: str, pane_id: str, agent: str | None, variant: str, padding: int) -> str | None:
     mark = mark_for(agent, variant)
     args = ["pane", "report-metadata", pane_id, "--source", source]
     if mark is None:
@@ -93,6 +93,7 @@ def report(source: str, pane_id: str, agent: str | None, variant: str) -> str | 
         args += ["--clear-token", TOKEN_NAME]
     else:
         args += ["--token", f"{TOKEN_NAME}={mark}"]
+    args += cobalt2_marks.pad_token_args(padding)
     run_herdr(*args)
     return mark
 
@@ -140,6 +141,7 @@ def main() -> int:
     args = parser.parse_args()
 
     variant = configured_variant(args.variant)
+    padding = cobalt2_marks.configured_padding()
     source = os.environ.get("HERDR_PLUGIN_ID") or DEFAULT_SOURCE
 
     if args.pane:
@@ -150,7 +152,7 @@ def main() -> int:
 
     marked = 0
     for pane_id, agent in targets:
-        if report(source, pane_id, agent, variant) is not None:
+        if report(source, pane_id, agent, variant, padding) is not None:
             marked += 1
     print(f"cobalt2 marks: {marked} of {len(targets)} pane(s) marked (variant {variant})")
     return 0

@@ -32,6 +32,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import cobalt2_marks  # noqa: E402
+
 TOKEN_NAME = "cobalt2_space"
 DEFAULT_SOURCE = "herdr-theme-cobalt2"
 SECTION = "space_icons"
@@ -59,13 +63,7 @@ def herdr_bin() -> str:
 
 
 def config_path() -> Path:
-    configured = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
-    root = (
-        Path(configured)
-        if configured
-        else Path.home() / ".config/herdr/plugins/config/herdr-theme-cobalt2"
-    )
-    return root / "config.toml"
+    return cobalt2_marks.plugin_config_path()
 
 
 def load_icons(path: Path | None = None) -> dict[str, str]:
@@ -170,7 +168,7 @@ def _find(value: Any, key: str) -> str | None:
     return None
 
 
-def report(source: str, workspace_id: str, icon: str | None) -> None:
+def report(source: str, workspace_id: str, icon: str | None, padding: int) -> None:
     args = ["workspace", "report-metadata", workspace_id, "--source", source]
     if icon is None:
         # Clear, so removing an entry removes the icon instead of leaving the
@@ -178,6 +176,7 @@ def report(source: str, workspace_id: str, icon: str | None) -> None:
         args += ["--clear-token", TOKEN_NAME]
     else:
         args += ["--token", f"{TOKEN_NAME}={icon}"]
+    args += cobalt2_marks.pad_token_args(padding)
     run_herdr(*args)
 
 
@@ -224,6 +223,7 @@ def main() -> int:
             print(f"{label}\t{icons[label]}")
         return 0
 
+    padding = cobalt2_marks.configured_padding()
     source = os.environ.get("HERDR_PLUGIN_ID") or DEFAULT_SOURCE
     known = dict(spaces())
     if args.workspace:
@@ -237,7 +237,7 @@ def main() -> int:
     marked = 0
     for workspace_id, label in targets:
         icon = icon_for(label, icons)
-        report(source, workspace_id, icon)
+        report(source, workspace_id, icon, padding)
         marked += icon is not None
     print(f"space icons: {marked} of {len(targets)} space(s) marked")
     return 0

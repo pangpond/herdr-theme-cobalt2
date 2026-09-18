@@ -110,7 +110,7 @@ class SidebarBlockTest(unittest.TestCase):
 
     def test_logo_token_carries_every_rule(self):
         parsed = tomllib.loads(self.apply.render_sidebar_block())
-        token = parsed["ui"]["sidebar"]["agents"]["rows"][0][1]
+        token = parsed["ui"]["sidebar"]["agents"]["rows"][1][1]
         self.assertEqual(token["token"], "$cobalt2_logo")
         self.assertEqual(token["fg"], cobalt2_marks.ACCENT)
         self.assertEqual(
@@ -125,7 +125,7 @@ class SidebarBlockTest(unittest.TestCase):
     def test_state_icon_stays_first(self):
         """Herdr's own colored lifecycle icon must keep its column."""
         parsed = tomllib.loads(self.apply.render_sidebar_block())
-        self.assertEqual(parsed["ui"]["sidebar"]["agents"]["rows"][0][0], "state_icon")
+        self.assertEqual(parsed["ui"]["sidebar"]["agents"]["rows"][1][0], "state_icon")
 
     def test_theme_block_is_valid_toml(self):
         parsed = tomllib.loads(self.apply.render_theme_block())
@@ -159,9 +159,9 @@ class SidebarBlockTest(unittest.TestCase):
     def test_spaces_block_renders_icon_and_branch_rows(self):
         parsed = tomllib.loads(self.apply.render_spaces_block())
         rows = parsed["ui"]["sidebar"]["spaces"]["rows"]
-        self.assertEqual(rows[0][0]["token"], "$cobalt2_space")
-        self.assertEqual(rows[0][1]["token"], "workspace")
-        self.assertEqual([token["token"] for token in rows[1]], ["branch", "git_status"])
+        self.assertEqual(rows[1][0]["token"], "$cobalt2_space")
+        self.assertEqual(rows[1][1]["token"], "workspace")
+        self.assertEqual([token["token"] for token in rows[2]], ["branch", "git_status"])
 
     def test_spaces_regex_replaces_only_its_own_section(self):
         config = (
@@ -176,6 +176,72 @@ class SidebarBlockTest(unittest.TestCase):
         self.assertIn("$cobalt2_space", result)
         self.assertIn("[[keys.command]]", result)
         tomllib.loads(result)
+
+    def test_blocks_wrap_entries_in_padding_rows(self):
+        """Padding rows are what give the active-row highlight breathing room."""
+        for block, section in (
+            (self.apply.render_sidebar_block(), "agents"),
+            (self.apply.render_spaces_block(), "spaces"),
+        ):
+            with self.subTest(section=section):
+                rows = tomllib.loads(block)["ui"]["sidebar"][section]["rows"]
+                self.assertEqual(
+                    rows[0][0]["token"], f"${cobalt2_marks.PAD_TOKEN_ABOVE}"
+                )
+                self.assertEqual(
+                    rows[-1][0]["token"], f"${cobalt2_marks.PAD_TOKEN_BELOW}"
+                )
+
+
+class RowPaddingTest(unittest.TestCase):
+    """A padding row only renders when its token is reported, so the level is
+    chosen by the reporters rather than by the config block."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.config = self.tmp / "config.toml"
+
+    def test_defaults_to_one_row_when_unset(self):
+        self.assertEqual(cobalt2_marks.configured_padding(self.config), 1)
+        self.config.write_text('marks = "font"\n')
+        self.assertEqual(cobalt2_marks.configured_padding(self.config), 1)
+
+    def test_reads_each_level(self):
+        for level in cobalt2_marks.PAD_LEVELS:
+            with self.subTest(level=level):
+                self.config.write_text(f"row_padding = {level}\n")
+                self.assertEqual(cobalt2_marks.configured_padding(self.config), level)
+
+    def test_rejects_an_out_of_range_level(self):
+        self.config.write_text("row_padding = 3\n")
+        with self.assertRaises(ValueError):
+            cobalt2_marks.configured_padding(self.config)
+
+    def test_level_selects_which_tokens_are_reported(self):
+        below = f"{cobalt2_marks.PAD_TOKEN_BELOW}={cobalt2_marks.PAD_GLYPH}"
+        above = f"{cobalt2_marks.PAD_TOKEN_ABOVE}={cobalt2_marks.PAD_GLYPH}"
+        self.assertEqual(
+            cobalt2_marks.pad_token_args(0),
+            [
+                "--clear-token",
+                cobalt2_marks.PAD_TOKEN_BELOW,
+                "--clear-token",
+                cobalt2_marks.PAD_TOKEN_ABOVE,
+            ],
+        )
+        self.assertEqual(
+            cobalt2_marks.pad_token_args(1),
+            ["--token", below, "--clear-token", cobalt2_marks.PAD_TOKEN_ABOVE],
+        )
+        self.assertEqual(
+            cobalt2_marks.pad_token_args(2), ["--token", below, "--token", above]
+        )
+
+    def test_pad_glyph_is_not_whitespace(self):
+        """Herdr drops whitespace-only metadata, which is why this is U+2800."""
+        self.assertFalse(cobalt2_marks.PAD_GLYPH.isspace())
+        self.assertEqual(len(cobalt2_marks.PAD_GLYPH), 1)
 
 
 class SpaceIconStoreTest(unittest.TestCase):
@@ -270,6 +336,16 @@ class AgentMarksTest(unittest.TestCase):
         )
         return result, fake
 
+    @staticmethod
+    def logo_arg(call: list[str]) -> str | None:
+        """The $cobalt2_logo argument, ignoring the padding tokens beside it."""
+        for index, item in enumerate(call):
+            if item in ("--token", "--clear-token") and call[index + 1].startswith(
+                "cobalt2_logo"
+            ):
+                return call[index + 1] if item == "--token" else "cleared"
+        return None
+
     def test_reports_a_mark_for_each_known_agent(self):
         panes = [
             {"pane_id": "w1:p1", "agent": "claude"},
@@ -278,7 +354,7 @@ class AgentMarksTest(unittest.TestCase):
         result, fake = self.run_marks(panes)
         self.assertEqual(result.returncode, 0, result.stderr)
         tokens = {
-            call[2]: call[-1]
+            call[2]: self.logo_arg(call)
             for call in fake.calls()
             if call[:2] == ["pane", "report-metadata"]
         }
@@ -289,15 +365,13 @@ class AgentMarksTest(unittest.TestCase):
         """A stale mark from a previous agent would otherwise stick around."""
         result, fake = self.run_marks([{"pane_id": "w1:p1", "agent": "aider"}])
         self.assertEqual(result.returncode, 0, result.stderr)
-        call = fake.calls()[-1]
-        self.assertIn("--clear-token", call)
-        self.assertEqual(call[-1], "cobalt2_logo")
+        self.assertEqual(self.logo_arg(fake.calls()[-1]), "cleared")
 
     def test_tolerates_a_pane_with_no_agent(self):
         """Indexing pane['agent'] here would raise KeyError on an idle pane."""
         result, fake = self.run_marks([{"pane_id": "w1:p1"}])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--clear-token", fake.calls()[-1])
+        self.assertEqual(self.logo_arg(fake.calls()[-1]), "cleared")
 
     def test_never_touches_herdr_state_reporting(self):
         """Herdr owns the state icon and lifecycle labels; this only adds a token."""
@@ -312,14 +386,23 @@ class AgentMarksTest(unittest.TestCase):
             [{"pane_id": "w1:p1", "agent": "claude"}], "--variant", "text"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(fake.calls()[-1][-1], "cobalt2_logo=C")
+        self.assertEqual(self.logo_arg(fake.calls()[-1]), "cobalt2_logo=C")
 
     def test_none_variant_reports_no_mark(self):
         result, fake = self.run_marks(
             [{"pane_id": "w1:p1", "agent": "claude"}], "--variant", "none"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--clear-token", fake.calls()[-1])
+        self.assertEqual(self.logo_arg(fake.calls()[-1]), "cleared")
+
+    def test_reports_the_padding_token_beside_the_mark(self):
+        """The padding row only renders when this token is reported."""
+        result, fake = self.run_marks([{"pane_id": "w1:p1", "agent": "claude"}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = fake.calls()[-1]
+        self.assertIn(
+            f"{cobalt2_marks.PAD_TOKEN_BELOW}={cobalt2_marks.PAD_GLYPH}", call
+        )
 
 
 

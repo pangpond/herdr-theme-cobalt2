@@ -81,6 +81,21 @@ To use ASCII marks instead of glyphs, or none at all, put this in the plugin's c
 marks = "text"  # or "none"
 ```
 
+## Row padding
+
+Sidebar entries are padded so the active-row highlight is not flush against
+the text. Herdr has no padding setting, and it drops whitespace-only metadata,
+so the padding is a row holding a braille blank (U+2800) that renders nothing.
+A terminal grid has no fraction of a row, so the levels are:
+
+```toml
+row_padding = 1  # 0 none, 1 one row below (default), 2 one row above and below
+```
+
+Level 2 is the smallest symmetric option and adds two rows per entry; level 1
+is half that height but sits below the entry only. Lowering the level clears
+the tokens it drops, so rows disappear without an apply.
+
 ## Space icons
 
 Each space row can carry its own icon. Herdr has no icon picker, and workspace
