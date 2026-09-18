@@ -1,6 +1,6 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.7.0"
+version = "0.8.0"
 # Agent row styling rules were verified against 0.9.0.
 min_herdr_version = "0.9.0"
 description = "Apply Wes Bos Cobalt2 colors to Herdr's UI, with a sized harness mark on every agent row."
@@ -60,6 +60,13 @@ title = "Space icons: refresh"
 description = "Re-report the chosen icon for every current space."
 contexts = ["global"]
 command = ["python3", "bin/space-marks"]
+
+[[actions]]
+id = "detect-space-icons"
+title = "Space icons: detect from projects"
+description = "Guess each space's icon from the stack its checkout uses, keeping icons already chosen."
+contexts = ["global"]
+command = ["python3", "bin/space-marks", "--detect"]
 
 [[panes]]
 id = "space-icons"

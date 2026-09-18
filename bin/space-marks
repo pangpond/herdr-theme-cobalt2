@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 import cobalt2_config  # noqa: E402
 import cobalt2_marks  # noqa: E402
+import cobalt2_projects  # noqa: E402
 
 TOKEN_NAME = "cobalt2_space"
 DEFAULT_SOURCE = "herdr-theme-cobalt2"
@@ -142,8 +143,67 @@ def resolve_label(workspace_id: str, known: dict[str, str]) -> str | None:
     return label if isinstance(label, str) else None
 
 
+def space_paths() -> dict[str, Path]:
+    """Checkout directory per space.
+
+    A space made from a worktree reports one directly. Otherwise the panes
+    inside it are the only record of where it lives, so the first pane's cwd
+    stands in for the space.
+    """
+    paths: dict[str, Path] = {}
+    workspaces = run_herdr("workspace", "list").get("result", {}).get("workspaces", [])
+    for space in workspaces:
+        worktree = space.get("worktree") or {}
+        checkout = worktree.get("checkout_path") or worktree.get("repo_root")
+        if isinstance(checkout, str):
+            paths[space["workspace_id"]] = Path(checkout)
+    panes = run_herdr("pane", "list").get("result", {}).get("panes", [])
+    for pane in panes:
+        workspace_id = pane.get("workspace_id")
+        cwd = pane.get("cwd") or pane.get("foreground_cwd")
+        if workspace_id in paths or not isinstance(cwd, str):
+            continue
+        if isinstance(workspace_id, str):
+            paths[workspace_id] = Path(cwd)
+    return paths
+
+
+def detect_icons(icons: dict[str, str], force: bool) -> dict[str, str]:
+    """Fill in icons from what each space has checked out.
+
+    Existing entries are kept unless --force: the user's own choice outranks a
+    guess, and re-running detection must not undo a manual pick.
+    """
+    paths = space_paths()
+    for workspace_id, label in spaces():
+        key = label.strip().lower()
+        if not key:
+            continue
+        if key in icons and not force:
+            print(f"{label}\t{icons[key]}\t(kept)")
+            continue
+        path = paths.get(workspace_id)
+        if path is None:
+            print(f"{label}\t-\t(no directory reported)", file=sys.stderr)
+            continue
+        icon = cobalt2_projects.detect(path)
+        icons[key] = icon.glyph
+        print(f"{label}\t{icon.glyph}\t{icon.label}")
+    return icons
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--detect",
+        action="store_true",
+        help="guess icons from each space's checkout and write them",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="with --detect, replace icons already configured",
+    )
     parser.add_argument(
         "--set",
         metavar="LABEL=ICON",
@@ -161,6 +221,10 @@ def main() -> int:
     args = parser.parse_args()
 
     icons = load_icons()
+    if args.detect:
+        icons = detect_icons(icons, args.force)
+        print(f"space icons: wrote {save_icons(icons)}")
+
     if args.set or args.unset:
         for pair in args.set:
             label, separator, icon = pair.partition("=")

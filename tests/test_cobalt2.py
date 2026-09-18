@@ -25,6 +25,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 
 import cobalt2_config  # noqa: E402
 import cobalt2_marks  # noqa: E402
+import cobalt2_projects  # noqa: E402
 import cobalt2_resolve  # noqa: E402
 
 BMP_PUA = range(0xE000, 0xF900)
@@ -206,6 +207,67 @@ class SidebarBlockTest(unittest.TestCase):
                 self.assertEqual(
                     rows[-1][0]["token"], f"${cobalt2_marks.PAD_TOKEN_BELOW}"
                 )
+
+
+class ProjectDetectionTest(unittest.TestCase):
+    """Space icons can be guessed from what a checkout contains."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write(self, relative: str, content: str = "") -> Path:
+        path = self.tmp / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        return path
+
+    def test_framework_beats_the_language_it_is_written_in(self):
+        self.write("package.json", json.dumps({"dependencies": {"next": "15", "react": "19"}}))
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Next.js")
+
+    def test_a_nested_framework_outranks_a_generic_root_manifest(self):
+        """Monorepo roots carry a toolchain manifest, not the project's identity."""
+        self.write("package.json", json.dumps({"devDependencies": {"turbo": "2"}}))
+        self.write(
+            "apps/web/package.json", json.dumps({"dependencies": {"nuxt": "3"}})
+        )
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Nuxt")
+
+    def test_dependencies_pick_the_php_and_python_frameworks(self):
+        laravel = self.tmp / "php"
+        laravel.mkdir()
+        (laravel / "composer.json").write_text(json.dumps({"require": {"laravel/framework": "11"}}))
+        self.assertEqual(cobalt2_projects.detect(laravel).label, "Laravel")
+
+        django = self.tmp / "py"
+        django.mkdir()
+        (django / "requirements.txt").write_text("Django==5.0\n")
+        self.assertEqual(cobalt2_projects.detect(django).label, "Django")
+
+    def test_extensions_are_the_fallback_when_no_manifest_exists(self):
+        self.write("main.rs", "fn main() {}")
+        self.write("lib.rs", "")
+        self.write("notes.md", "")
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Rust")
+
+    def test_an_empty_directory_still_resolves(self):
+        """Reporting nothing would leave the space with no icon at all."""
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Folder")
+        (self.tmp / ".git").mkdir()
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Git")
+
+    def test_vendor_directories_never_identify_the_project(self):
+        self.write("node_modules/react/package.json", json.dumps({"name": "react"}))
+        self.write("Cargo.toml", "[package]\nname = 'app'\n")
+        self.assertEqual(cobalt2_projects.detect(self.tmp).label, "Rust")
+
+    def test_every_icon_is_a_single_bmp_private_use_glyph(self):
+        """Herdr tooling only treats BMP PUA marks as printable width-1 symbols."""
+        for name, icon in cobalt2_projects.ICONS.items():
+            with self.subTest(icon=name):
+                self.assertIn(icon.codepoint, BMP_PUA)
+                self.assertEqual(len(icon.glyph), 1)
 
 
 class RowPaddingTest(unittest.TestCase):

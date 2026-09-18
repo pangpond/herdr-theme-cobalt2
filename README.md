@@ -184,6 +184,29 @@ python3 bin/space-marks --list
 Emoji occupy two cells. A Nerd Font glyph stays one cell wide if you want the
 labels to line up exactly.
 
+### Detecting icons from projects
+
+A project's real favicon cannot be shown: Herdr's sidebar renders text, and its
+graphics APIs are pane-scoped. The closest identifier is the Nerd Font glyph
+for the stack a space has checked out, which this guesses:
+
+```bash
+herdr plugin action invoke detect-space-icons --plugin herdr-theme-cobalt2
+python3 bin/space-marks --detect          # same thing, prints what it found
+python3 bin/space-marks --detect --force  # also replace icons already chosen
+```
+
+It reads manifests (`package.json`, `composer.json`, `Cargo.toml`, `go.mod`,
+`pyproject.toml`, …) up to three directories deep and keeps the most specific
+hit, so a monorepo whose root carries a toolchain manifest still reports the
+framework its apps use. File extensions are the fallback, then Git, then a
+plain folder. Detected icons are written into `[space_icons]` as ordinary
+entries, so editing or picking over them works as before, and `--detect`
+without `--force` never overwrites a choice you made.
+
+The glyphs are Nerd Font devicons verified present in JetBrainsMono Nerd Font.
+A terminal without a Nerd Font shows tofu; pick emoji with the picker instead.
+
 ## Sizing the marks
 
 The bundled font uses 1000 units/em. Each terminal handles that source
