@@ -123,18 +123,32 @@ and keep working with no API key at all.
 Sidebar entries are padded so the active-row highlight is not flush against
 the text. Herdr has no padding setting, and it drops whitespace-only metadata,
 so the padding is a row holding a braille blank (U+2800) that renders nothing.
-A terminal grid has no fraction of a row, so the levels are:
+A terminal grid has no fraction of a row, so padding comes in whole rows:
 
 ```toml
-row_padding = 2  # 2 above and below (default), 1 below only, 0 none
+row_padding = 2          # both panels: 2 above and below, 1 below only, 0 none
+row_padding_agents = 2   # optional per-panel override (default 2)
+row_padding_spaces = 1   # optional per-panel override (default 1)
+row_gap = 0              # blank rows *between* entries, outside the highlight
 ```
 
-Level 2 is symmetric, which is why it is the default. Each agent entry is kept
-to two content rows — the mark headline plus one detail row carrying the
-lifecycle state, usage, and context — so a padded entry is four terminal rows
-in total, the smallest balanced entry Herdr's grid allows. Level 1 is half the
-padding height but sits below the entry only. Lowering the level clears the
-tokens it drops, so rows disappear without re-applying the theme.
+Each agent entry is two content rows — the mark headline plus one detail row
+with the lifecycle state, usage, and context — so level 2 makes a padded entry
+four terminal rows, the smallest balanced entry the grid allows. Space entries
+carry the same two rows but read heavier, which is why they default to one
+padding row.
+
+`row_padding*` takes effect on the next mark report:
+
+```bash
+herdr plugin action invoke refresh-marks --plugin herdr-theme-cobalt2
+herdr plugin action invoke refresh-space-icons --plugin herdr-theme-cobalt2
+```
+
+`row_gap` is written into `config.toml`, so it needs `apply`. Because padding
+and gap are both whole rows, the only way to make every row shorter is the
+terminal: Ghostty takes `adjust-cell-height = -20%` in
+`~/.config/ghostty/config`, and iTerm2 has Profile > Text > Line Spacing.
 
 ## Space icons
 

@@ -217,23 +217,38 @@ class RowPaddingTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.config = self.tmp / "config.toml"
 
-    def test_defaults_to_symmetric_padding_when_unset(self):
-        """Symmetric padding is the point; level 1 is an opt-in half height."""
-        self.assertEqual(cobalt2_marks.DEFAULT_PAD_LEVEL, 2)
-        self.assertEqual(cobalt2_marks.configured_padding(self.config), 2)
-        self.config.write_text('marks = "font"\n')
-        self.assertEqual(cobalt2_marks.configured_padding(self.config), 2)
+    def test_ships_asymmetric_defaults_per_section(self):
+        """Tuned against a real sidebar: spaces read heavier at the same level."""
+        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 2)
+        self.assertEqual(cobalt2_marks.configured_padding("spaces", self.config), 1)
+        self.assertEqual(cobalt2_marks.configured_row_gap(self.config), 0)
 
-    def test_reads_each_level(self):
+    def test_reads_a_configured_row_gap(self):
+        self.config.write_text("row_gap = 0\n")
+        self.assertEqual(cobalt2_marks.configured_row_gap(self.config), 0)
+
+    def test_shared_level_applies_to_both_sections(self):
         for level in cobalt2_marks.PAD_LEVELS:
             with self.subTest(level=level):
                 self.config.write_text(f"row_padding = {level}\n")
-                self.assertEqual(cobalt2_marks.configured_padding(self.config), level)
+                for section in ("agents", "spaces"):
+                    self.assertEqual(
+                        cobalt2_marks.configured_padding(section, self.config), level
+                    )
+
+    def test_a_section_key_overrides_the_shared_level(self):
+        """The two panels render different content, so one level looks heavier."""
+        self.config.write_text("row_padding = 2\nrow_padding_spaces = 0\n")
+        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 2)
+        self.assertEqual(cobalt2_marks.configured_padding("spaces", self.config), 0)
 
     def test_rejects_an_out_of_range_level(self):
         self.config.write_text("row_padding = 3\n")
         with self.assertRaises(ValueError):
-            cobalt2_marks.configured_padding(self.config)
+            cobalt2_marks.configured_padding("agents", self.config)
+        self.config.write_text("row_padding_spaces = 9\n")
+        with self.assertRaises(ValueError):
+            cobalt2_marks.configured_padding("spaces", self.config)
 
     def test_level_selects_which_tokens_are_reported(self):
         below = f"{cobalt2_marks.PAD_TOKEN_BELOW}={cobalt2_marks.PAD_GLYPH}"
@@ -336,12 +351,17 @@ class AgentMarksTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def run_marks(self, panes: list[dict], *args: str) -> tuple[subprocess.CompletedProcess, FakeHerdr]:
+    def run_marks(
+        self,
+        panes: list[dict],
+        *args: str,
+        config_dir: Path | None = None,
+    ) -> tuple[subprocess.CompletedProcess, FakeHerdr]:
         fake = FakeHerdr(self.tmp, panes)
         # Point the plugin config at a scratch directory. Unsetting it would
         # fall back to ~/.config, making every assertion depend on whatever the
         # developer running the suite has configured.
-        config_dir = self.tmp / "config"
+        config_dir = config_dir or self.tmp / "config"
         config_dir.mkdir(exist_ok=True)
         env = {
             **os.environ,
@@ -420,14 +440,25 @@ class AgentMarksTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.logo_arg(fake.calls()[-1]), "cleared")
 
-    def test_reports_the_padding_token_beside_the_mark(self):
-        """The padding row only renders when this token is reported."""
+    def test_padding_tokens_follow_the_configured_level(self):
+        """Padding rows render only while their token is reported."""
         result, fake = self.run_marks([{"pane_id": "w1:p1", "agent": "claude"}])
         self.assertEqual(result.returncode, 0, result.stderr)
-        call = fake.calls()[-1]
-        self.assertIn(
-            f"{cobalt2_marks.PAD_TOKEN_BELOW}={cobalt2_marks.PAD_GLYPH}", call
+        default_call = fake.calls()[-1]
+        for token in (cobalt2_marks.PAD_TOKEN_BELOW, cobalt2_marks.PAD_TOKEN_ABOVE):
+            self.assertIn(f"{token}={cobalt2_marks.PAD_GLYPH}", default_call)
+
+        config = self.tmp / "padding-config"
+        config.mkdir(exist_ok=True)
+        (config / "config.toml").write_text("row_padding = 0\n")
+        result, fake = self.run_marks(
+            [{"pane_id": "w1:p1", "agent": "claude"}], config_dir=config
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bare_call = fake.calls()[-1]
+        for token in (cobalt2_marks.PAD_TOKEN_BELOW, cobalt2_marks.PAD_TOKEN_ABOVE):
+            self.assertNotIn(f"{token}={cobalt2_marks.PAD_GLYPH}", bare_call)
+            self.assertIn(token, bare_call)
 
     def test_a_cached_verdict_paints_without_network_or_api_key(self):
         """Resolution happens once; the hooks must stay offline forever after."""

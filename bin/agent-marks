@@ -222,7 +222,7 @@ def main() -> int:
     args = parser.parse_args()
 
     variant = configured_variant(args.variant)
-    padding = cobalt2_marks.configured_padding()
+    padding = cobalt2_marks.configured_padding("agents")
     source = os.environ.get("HERDR_PLUGIN_ID") or DEFAULT_SOURCE
 
     if args.pane:

@@ -124,8 +124,21 @@ PAD_TOKEN_BELOW = "cobalt2_pad"
 PAD_TOKEN_ABOVE = "cobalt2_pad_top"
 #: Plugin config key selecting the level: 0 none, 1 below only, 2 both.
 PAD_CONFIG_KEY = "row_padding"
+#: Per-section overrides. The agent and space panels render different numbers
+#: of content rows, so one shared level makes one of them look heavier.
+PAD_CONFIG_KEY_AGENTS = "row_padding_agents"
+PAD_CONFIG_KEY_SPACES = "row_padding_spaces"
 PAD_LEVELS = (0, 1, 2)
+#: Shipped defaults, tuned against a real sidebar: the agent entry carries two
+#: content rows and looks balanced with padding above and below, while the
+#: space entry reads as heavier at the same level and takes one row.
 DEFAULT_PAD_LEVEL = 2
+DEFAULT_PAD_LEVEL_SPACES = 1
+#: Plugin config key for the blank rows Herdr puts *between* entries. Those
+#: rows sit outside the active-row highlight, so a gap separates entries
+#: without making the highlight itself taller.
+GAP_CONFIG_KEY = "row_gap"
+DEFAULT_ROW_GAP = 0
 
 
 def plugin_config_path() -> Path:
@@ -138,26 +151,43 @@ def plugin_config_path() -> Path:
     return root / "config.toml"
 
 
-def configured_padding(path: Path | None = None) -> int:
-    """Padding rows per sidebar entry: 0, 1 (below), or 2 (above and below).
+def _config_int(key: str, default: int, path: Path | None) -> int:
+    """One integer key from the plugin config.
 
     Read with a regex rather than tomllib, which is absent from the Python 3.9
     that /usr/bin/python3 still is on macOS.
     """
     path = path or plugin_config_path()
     if not path.is_file():
-        return DEFAULT_PAD_LEVEL
-    match = re.search(
-        rf"^\s*{PAD_CONFIG_KEY}\s*=\s*(\d+)\s*$", path.read_text(), re.MULTILINE
-    )
-    if match is None:
-        return DEFAULT_PAD_LEVEL
-    level = int(match.group(1))
+        return default
+    match = re.search(rf"^\s*{key}\s*=\s*(\d+)\s*$", path.read_text(), re.MULTILINE)
+    return default if match is None else int(match.group(1))
+
+
+def configured_padding(section: str | None = None, path: Path | None = None) -> int:
+    """Padding rows per entry: 0, 1 (below), or 2 (above and below).
+
+    `section` is "agents" or "spaces". Its own key wins over the shared
+    `row_padding`, which in turn wins over the section's shipped default.
+    """
+    sections = {
+        "agents": (PAD_CONFIG_KEY_AGENTS, DEFAULT_PAD_LEVEL),
+        "spaces": (PAD_CONFIG_KEY_SPACES, DEFAULT_PAD_LEVEL_SPACES),
+    }
+    key, default = sections.get(section or "", (PAD_CONFIG_KEY, DEFAULT_PAD_LEVEL))
+    shared = _config_int(PAD_CONFIG_KEY, default, path)
+    level = shared if key == PAD_CONFIG_KEY else _config_int(key, shared, path)
     if level not in PAD_LEVELS:
         raise ValueError(
-            f"invalid {PAD_CONFIG_KEY} {level} in {path}; expected 0, 1, or 2"
+            f"invalid {key} {level} in {path or plugin_config_path()}; "
+            f"expected 0, 1, or 2"
         )
     return level
+
+
+def configured_row_gap(path: Path | None = None) -> int:
+    """Blank rows Herdr leaves between sidebar entries, outside the highlight."""
+    return _config_int(GAP_CONFIG_KEY, DEFAULT_ROW_GAP, path)
 
 
 def pad_token_args(level: int) -> list[str]:
