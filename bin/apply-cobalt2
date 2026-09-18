@@ -99,11 +99,6 @@ TOKEN_ORDER = [
 # tokens nobody reports, so these rows simply collapse when it is absent.
 SIDEBAR_TAIL_ROWS = [
     '[{ token = "$provider", fg = "#9effff" }, { token = "$limit", fg = "#d6deeb" }]',
-    (
-        '[{ token = "$cache_high", fg = "#3ad900" }, '
-        '{ token = "$cache_mid", fg = "#ffc600" }, '
-        '{ token = "$cache_low", fg = "#ff628c" }]'
-    ),
     '[{ token = "$context", fg = "#82a7bd" }]',
 ]
 
