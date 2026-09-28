@@ -529,6 +529,18 @@ def build_iterm(args: argparse.Namespace) -> list[Path]:
     harness_path = args.harness or harness_font()
     base_dir = args.base_dir or font_dir()
     family = f"{ITERM_BASE_FAMILY} {ITERM_FAMILY_SUFFIX}"
+    missing_faces = [
+        style for style, _ in ITERM_FACES
+        if not (base_dir / f"{ITERM_BASE_FAMILY} {style}.ttf").is_file()
+    ]
+    if missing_faces:
+        die(
+            f"{ITERM_BASE_FAMILY} is not installed in {base_dir}: "
+            f"missing {', '.join(missing_faces)}.\n"
+            f"Install the four MesloLGS NF faces from "
+            f"https://github.com/romkatv/powerlevel10k#manual-font-installation, "
+            f"or pass --base-dir with the directory that holds them."
+        )
 
     harness = TTFont(harness_path)
     harness_marks = record(harness, cobalt2_marks.codepoints("harness"))
