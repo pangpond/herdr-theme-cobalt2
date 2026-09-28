@@ -47,6 +47,17 @@ def section_re(section: str) -> re.Pattern[str]:
     return re.compile(rf"(?ms)^\[{re.escape(section)}\]\n.*?(?=^\[|\Z)")
 
 
+def preamble(text: str) -> str:
+    """The part of a config that precedes the first table header.
+
+    TOML binds every key after `[section]` to that section, so the plugin's own
+    top-level keys only mean what they look like while they sit above the
+    tables this module writes.
+    """
+    match = re.search(r"(?m)^\[", text)
+    return text if match is None else text[: match.start()]
+
+
 def load_table(section: str, path: Path | None = None) -> dict[str, str]:
     """The table's entries, keys lowercased so lookups ignore case."""
     path = path or config_path()
@@ -83,23 +94,23 @@ def save_table(
     header: str = "",
     first_key: str | None = None,
 ) -> Path:
-    """Rewrite only this table, leaving every other key in the file alone."""
+    """Rewrite only this table, leaving every other key in the file alone.
+
+    The table is always written last. Keys after a table header belong to that
+    table in TOML, so a table written above the plugin's own top-level keys
+    would silently swallow them.
+    """
     path = path or config_path()
     pattern = section_re(section)
     original = path.read_text() if path.is_file() else ""
-    if not values:
-        updated = pattern.sub("", original).rstrip("\n")
-        updated = f"{updated}\n" if updated else ""
-    else:
-        block = render_table(section, values, header, first_key)
-        if pattern.search(original):
-            # A function replacement: values may contain backslash escapes that
-            # re.sub would otherwise read as template references.
-            updated = pattern.sub(lambda _: block + "\n", original, count=1)
-            updated = updated.rstrip("\n") + "\n"
-        else:
-            head = original.rstrip("\n")
-            updated = (f"{head}\n\n" if head else "") + block
+    head = preamble(original)
+    tables = pattern.sub("", original[len(head) :]).strip("\n")
+    head = head.strip("\n")
+    parts = [part for part in (head, tables) if part]
+    if values:
+        parts.append(render_table(section, values, header, first_key).rstrip("\n"))
+    updated = "\n\n".join(parts)
+    updated = f"{updated}\n" if updated else ""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(updated)

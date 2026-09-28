@@ -50,6 +50,27 @@ Requires Herdr 0.9.0+, macOS or Linux, and Python 3.
 
 Restart the terminal after changing its font configuration.
 
+## Same setup on another machine
+
+Everything this theme decides ships with the plugin, so a second machine only
+needs the two install steps above:
+
+| What | Where it comes from |
+| --- | --- |
+| Palette, agent rows, space rows | `[theme]`, `[ui.sidebar.*]` written by `apply` |
+| Status marks, tab row, tab-bar clock | `[ui]` keys written by `apply`, merged into the ones you already had |
+| Row padding and gap | plugin defaults, overridable in the plugin config |
+| Ghostty cell height and font fallback | written by `scale-fonts` |
+| Space icons | detected from each checkout on startup |
+
+`apply` backs up your previous `[theme]`, `[ui]`, and `[ui.sidebar.*]` blocks
+before its first write, and `restore` puts them back. Keybindings are never
+touched; copy `[keys]` across yourself if you want those too.
+
+Machine-specific choices stay out of the repository: space icons are detected
+per checkout rather than shipped, so a machine with different projects gets
+icons that match them.
+
 ## What it does
 
 - Writes a Cobalt2 `[theme]` / `[theme.custom]` block into `~/.config/herdr/config.toml`

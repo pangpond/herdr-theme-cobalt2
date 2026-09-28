@@ -63,6 +63,12 @@ FONTTOOLS_PIN = "fonttools==4.65.0"
 HARNESS_FONT_FILE = "HerdrHarnessLogos-Regular.ttf"
 GHOSTTY_MARKER = "# herdr-theme-cobalt2 agent marks"
 GHOSTTY_RANGE = "U+E1A0-U+E1A8"
+#: Row height Ghostty renders at, as a percentage adjustment. The sidebar pads
+#: entries in whole terminal rows, so the only way to make that padding thinner
+#: is a shorter cell. Set `cell_height` in the plugin config to override, or ""
+#: to leave Ghostty's own value alone.
+GHOSTTY_CELL_HEIGHT_KEY = "adjust-cell-height"
+DEFAULT_CELL_HEIGHT = "-20%"
 ITERM_BASE_FAMILY = "MesloLGS NF"
 ITERM_FAMILY_SUFFIX = "Herdr"
 ITERM_FACES = (("Regular", "Regular"), ("Bold", "Bold"), ("Italic", "Italic"), ("Bold Italic", "Bold Italic"))
@@ -283,12 +289,22 @@ def ghostty_primary_family() -> str | None:
     return ghostty_reported_primary_family()
 
 
+def configured_cell_height() -> str:
+    """The `adjust-cell-height` value to write, or "" to leave it alone."""
+    value = cobalt2_marks.config_string(
+        "cell_height", DEFAULT_CELL_HEIGHT
+    )
+    return value.strip()
+
+
 def configure_ghostty(
     primary_family: str,
     config: Path | None = None,
     backup: Path | None = None,
+    cell_height: str | None = None,
 ) -> Path:
     """Install one canonical fallback/map block without disturbing user config."""
+    cell_height = configured_cell_height() if cell_height is None else cell_height.strip()
     path = config or ghostty_config_path()
     backup_path = backup or (state_dir() / "ghostty-config.backup")
     original = path.read_text() if path.is_file() else ""
@@ -301,6 +317,8 @@ def configure_ghostty(
         value = value.strip()
         family = value.strip('"')
         if line.strip() == GHOSTTY_MARKER:
+            continue
+        if key == GHOSTTY_CELL_HEIGHT_KEY and cell_height:
             continue
         if key == "font-family" and family == cobalt2_marks.HARNESS_FONT_FAMILY:
             continue
@@ -325,6 +343,8 @@ def configure_ghostty(
             f'font-codepoint-map = {GHOSTTY_RANGE}="{cobalt2_marks.HARNESS_FONT_FAMILY}"',
         )
     )
+    if cell_height:
+        lines.append(f"{GHOSTTY_CELL_HEIGHT_KEY} = {cell_height}")
     updated = "\n".join(lines) + "\n"
     if updated == original:
         print(f"Ghostty config already current: {path}")

@@ -129,11 +129,11 @@ PAD_CONFIG_KEY = "row_padding"
 PAD_CONFIG_KEY_AGENTS = "row_padding_agents"
 PAD_CONFIG_KEY_SPACES = "row_padding_spaces"
 PAD_LEVELS = (0, 1, 2)
-#: Shipped defaults, tuned against a real sidebar: the agent entry carries two
-#: content rows and looks balanced with padding above and below, while the
-#: space entry reads as heavier at the same level and takes one row.
+#: Shipped defaults, tuned against a real sidebar: both panels carry two
+#: content rows and read balanced with one padding row above and below, which
+#: is the smallest symmetric entry a terminal grid allows.
 DEFAULT_PAD_LEVEL = 2
-DEFAULT_PAD_LEVEL_SPACES = 1
+DEFAULT_PAD_LEVEL_SPACES = 2
 #: Plugin config key for the blank rows Herdr puts *between* entries. Those
 #: rows sit outside the active-row highlight, so a gap separates entries
 #: without making the highlight itself taller.
@@ -152,7 +152,10 @@ def plugin_config_path() -> Path:
 
 
 def _config_int(key: str, default: int, path: Path | None) -> int:
-    """One integer key from the plugin config.
+    """One integer key from the plugin config's top level.
+
+    Only the text above the first table header is searched: a key below one
+    belongs to that table in TOML, so reading it here would misreport it.
 
     Read with a regex rather than tomllib, which is absent from the Python 3.9
     that /usr/bin/python3 still is on macOS.
@@ -160,8 +163,27 @@ def _config_int(key: str, default: int, path: Path | None) -> int:
     path = path or plugin_config_path()
     if not path.is_file():
         return default
-    match = re.search(rf"^\s*{key}\s*=\s*(\d+)\s*$", path.read_text(), re.MULTILINE)
+    text = path.read_text()
+    table = re.search(r"(?m)^\[", text)
+    head = text if table is None else text[: table.start()]
+    match = re.search(rf"^\s*{key}\s*=\s*(\d+)\s*$", head, re.MULTILINE)
     return default if match is None else int(match.group(1))
+
+
+def config_string(key: str, default: str, path: Path | None = None) -> str:
+    """One string key from the plugin config's top level.
+
+    Same scope rule as the integer reader: only text above the first table
+    header counts, because TOML binds later keys to that table.
+    """
+    path = path or plugin_config_path()
+    if not path.is_file():
+        return default
+    text = path.read_text()
+    table = re.search(r"(?m)^\[", text)
+    head = text if table is None else text[: table.start()]
+    match = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"\s*$', head, re.MULTILINE)
+    return default if match is None else match.group(1)
 
 
 def configured_padding(section: str | None = None, path: Path | None = None) -> int:

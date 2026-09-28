@@ -209,6 +209,43 @@ class SidebarBlockTest(unittest.TestCase):
                 )
 
 
+class UiBlockTest(unittest.TestCase):
+    """`[ui]` carries the presentation this theme assumes, so a second machine
+    installing the plugin lands on the same look."""
+
+    def setUp(self):
+        self.apply = load_script("apply-cobalt2")
+
+    def test_creates_the_block_when_absent(self):
+        parsed = tomllib.loads(self.apply.render_ui_block(None))
+        self.assertEqual(parsed["ui"]["status_indicators"], "dots")
+        self.assertEqual(
+            [entry["type"] for entry in parsed["ui"]["tab_bar_right"]],
+            ["zoom", "datetime"],
+        )
+
+    def test_keeps_unrelated_keys_and_replaces_managed_ones(self):
+        existing = (
+            "[ui]\n"
+            "sidebar_width = 30\n"
+            'status_indicators = "symbols"\n'
+            "tab_bar_right = [\n"
+            '  { type = "hostname" },\n'
+            "]\n"
+        )
+        parsed = tomllib.loads(self.apply.render_ui_block(existing))["ui"]
+        self.assertEqual(parsed["sidebar_width"], 30)
+        self.assertEqual(parsed["status_indicators"], "dots")
+        self.assertEqual(
+            [entry["type"] for entry in parsed["tab_bar_right"]], ["zoom", "datetime"]
+        )
+
+    def test_reapplying_is_idempotent(self):
+        once = self.apply.render_ui_block(None)
+        self.assertEqual(self.apply.render_ui_block(once), once)
+
+
+
 class ProjectDetectionTest(unittest.TestCase):
     """Space icons can be guessed from what a checkout contains."""
 
@@ -279,11 +316,21 @@ class RowPaddingTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.config = self.tmp / "config.toml"
 
-    def test_ships_asymmetric_defaults_per_section(self):
-        """Tuned against a real sidebar: spaces read heavier at the same level."""
-        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 2)
-        self.assertEqual(cobalt2_marks.configured_padding("spaces", self.config), 1)
+    def test_ships_symmetric_defaults_for_both_panels(self):
+        """Both panels carry two content rows, so both read balanced at level 2."""
+        for section in ("agents", "spaces"):
+            with self.subTest(section=section):
+                self.assertEqual(
+                    cobalt2_marks.configured_padding(section, self.config), 2
+                )
         self.assertEqual(cobalt2_marks.configured_row_gap(self.config), 0)
+
+    def test_keys_below_a_table_are_not_read_as_top_level(self):
+        """TOML binds them to that table, so reading them here would misreport."""
+        self.config.write_text('[space_icons]\nrow_padding = 0\nherdr = "x"\n')
+        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 2)
+        self.config.write_text('row_padding = 0\n\n[space_icons]\nherdr = "x"\n')
+        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 0)
 
     def test_reads_a_configured_row_gap(self):
         self.config.write_text("row_gap = 0\n")
@@ -362,6 +409,17 @@ class SpaceIconStoreTest(unittest.TestCase):
         parsed = tomllib.loads(self.config.read_text())
         self.assertEqual(parsed["marks"], "text")
         self.assertEqual(parsed["space_icons"]["herdr"], "🚀")
+
+    def test_top_level_keys_survive_being_written_around(self):
+        """A table written above them would swallow them: TOML scopes by table."""
+        self.config.write_text('row_padding = 1\nrow_gap = 2\n')
+        self.marks.save_icons({"herdr": "🚀"}, self.config)
+        self.marks.save_icons({"herdr": "🚀", "other": "🎯"}, self.config)
+        parsed = tomllib.loads(self.config.read_text())
+        self.assertEqual(parsed["row_padding"], 1)
+        self.assertEqual(parsed["row_gap"], 2)
+        self.assertEqual(parsed["space_icons"]["other"], "🎯")
+        self.assertEqual(cobalt2_marks.configured_padding("agents", self.config), 1)
 
     def test_rewriting_replaces_rather_than_appends(self):
         self.marks.save_icons({"herdr": "🚀"}, self.config)

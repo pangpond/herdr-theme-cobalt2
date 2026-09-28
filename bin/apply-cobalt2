@@ -28,6 +28,7 @@ PLUGIN_STATE = Path(
 THEME_BACKUP = PLUGIN_STATE / "theme-block.bak.toml"
 SIDEBAR_BACKUP = PLUGIN_STATE / "sidebar-agents-block.bak.toml"
 SPACES_BACKUP = PLUGIN_STATE / "sidebar-spaces-block.bak.toml"
+UI_BACKUP = PLUGIN_STATE / "ui-block.bak.toml"
 
 # Replace [theme] through nested [theme.*] until the next unrelated section.
 THEME_SECTION_RE = re.compile(r"(?ms)^\[theme\]\n.*?(?=^\[(?!theme(?:\.|\]))[^\]]+\]\n|\Z)")
@@ -42,6 +43,20 @@ SPACES_SECTION_RE = re.compile(
     r"(?ms)^\[ui\.sidebar\.spaces\]\n.*?"
     r"(?=^\[\[|^\[(?!ui\.sidebar\.spaces(?:\.|\]))[^\]]+\]\n|\Z)"
 )
+#: The bare `[ui]` table, without its nested `[ui.*]` tables. Only the keys
+#: below are touched inside it; anything else the user put there is preserved.
+UI_SECTION_RE = re.compile(r"(?ms)^\[ui\]\n.*?(?=^\[|\Z)")
+
+#: Presentation defaults this theme assumes. They live in `[ui]` rather than in
+#: a block of their own, so a second machine installing the plugin lands on the
+#: same sidebar, tab row, and status marks as the first.
+UI_KEYS = {
+    "status_indicators": '"dots"',
+    "show_agent_labels_on_pane_borders": "true",
+    "hide_tab_bar_when_single_tab": "false",
+    "tab_bar_right": '[{ type = "zoom" }, { type = "datetime", format = "%H:%M" }]',
+    "tab_bar_right_separator": '" \u00b7 "',
+}
 
 
 MANAGED_BY = "# Managed by Herdr plugin: herdr-theme-cobalt2"
@@ -207,6 +222,38 @@ def render_spaces_block() -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def strip_keys(block: str, keys: set[str]) -> list[str]:
+    """The block's lines without the given assignments.
+
+    An assignment may span lines when its value is an array, so a dropped key
+    swallows everything up to the closing bracket.
+    """
+    kept: list[str] = []
+    skipping = False
+    for line in block.splitlines():
+        if skipping:
+            skipping = not line.startswith("]")
+            continue
+        key = line.partition("=")[0].strip()
+        if key in keys:
+            skipping = line.rstrip().endswith("[")
+            continue
+        kept.append(line)
+    return kept
+
+
+def render_ui_block(existing: str | None) -> str:
+    """`[ui]` with this theme's presentation keys, keeping the user's others."""
+    body = strip_keys(existing or "[ui]", set(UI_KEYS))
+    body = [line for line in body if line.strip() not in ("[ui]", MANAGED_BY)]
+    while body and not body[-1].strip():
+        body.pop()
+    lines = ["[ui]", MANAGED_BY, *body]
+    lines += [f"{key} = {value}" for key, value in UI_KEYS.items()]
+    return "\n".join(lines) + "\n\n"
+
+
+
 def extract_section(text: str, pattern: re.Pattern[str]) -> str | None:
     match = pattern.search(text)
     return match.group(0) if match else None
@@ -289,6 +336,7 @@ def backup_current() -> None:
         (THEME_SECTION_RE, THEME_BACKUP),
         (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP),
         (SPACES_SECTION_RE, SPACES_BACKUP),
+        (UI_SECTION_RE, UI_BACKUP),
     ):
         block = extract_section(text, pattern)
         if block is not None and MANAGED_BY in block:
@@ -333,11 +381,15 @@ def notify(message: str) -> None:
 
 def apply_theme() -> str:
     backup_current()
+    existing_ui = extract_section(
+        HERDR_CONFIG.read_text() if HERDR_CONFIG.exists() else "", UI_SECTION_RE
+    )
     changed = commit(
         [
             (THEME_SECTION_RE, render_theme_block()),
             (SIDEBAR_SECTION_RE, render_sidebar_block()),
             (SPACES_SECTION_RE, render_spaces_block()),
+            (UI_SECTION_RE, render_ui_block(existing_ui)),
         ]
     )
     refresh_marks()
@@ -356,6 +408,7 @@ def restore_theme() -> str:
             (THEME_SECTION_RE, THEME_BACKUP),
             (SIDEBAR_SECTION_RE, SIDEBAR_BACKUP),
             (SPACES_SECTION_RE, SPACES_BACKUP),
+            (UI_SECTION_RE, UI_BACKUP),
         )
         if path.is_file()
     ]

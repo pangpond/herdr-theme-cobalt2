@@ -1,6 +1,6 @@
 id = "herdr-theme-cobalt2"
 name = "Cobalt2 Theme"
-version = "0.8.0"
+version = "0.9.0"
 # Agent row styling rules were verified against 0.9.0.
 min_herdr_version = "0.9.0"
 description = "Apply Wes Bos Cobalt2 colors to Herdr's UI, with a sized harness mark on every agent row."
@@ -23,8 +23,11 @@ command = ["python3", "bin/space-marks"]
 on = "workspace.renamed"
 command = ["python3", "bin/space-marks"]
 
+# --detect fills in icons for spaces the user has not chosen one for, which is
+# what makes a fresh machine look like the one the config came from. Existing
+# choices are kept.
 [[startup]]
-command = ["python3", "bin/space-marks"]
+command = ["python3", "bin/space-marks", "--detect"]
 
 [[actions]]
 id = "apply"
