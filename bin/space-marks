@@ -252,6 +252,13 @@ def main() -> int:
             [(event, resolve_label(event, known))] if event else list(known.items())
         )
 
+    # An empty mapping means "nothing configured yet", not "clear everything".
+    # Clearing on that reading wipes every icon whenever the config is missing
+    # or momentarily unreadable, which is exactly when a run should do nothing.
+    if not icons:
+        print("space icons: no icons configured; run --detect or pick one")
+        return 0
+
     marked = 0
     for workspace_id, label in targets:
         icon = icon_for(label, icons)

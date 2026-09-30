@@ -441,6 +441,68 @@ class SpaceIconStoreTest(unittest.TestCase):
         self.assertIsNone(self.marks.icon_for("unknown", {"herdr": "🚀"}))
 
 
+class SpaceMarksReportTest(unittest.TestCase):
+    """Reporting must never treat "nothing configured" as "clear everything"."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def run_space_marks(self, config: str | None) -> tuple[subprocess.CompletedProcess, list[list[str]]]:
+        log = self.tmp / "calls.jsonl"
+        binary = self.tmp / "herdr"
+        spaces = [{"workspace_id": "w1", "label": "herdr"}]
+        binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"log = {str(log)!r}\n"
+            f"spaces = {json.dumps(spaces)}\n"
+            "with open(log, 'a') as handle:\n"
+            "    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['workspace', 'list']:\n"
+            "    print(json.dumps({'result': {'workspaces': spaces}}))\n"
+            "elif sys.argv[1:3] == ['pane', 'list']:\n"
+            "    print(json.dumps({'result': {'panes': []}}))\n"
+        )
+        binary.chmod(0o755)
+        config_dir = self.tmp / "config"
+        config_dir.mkdir(exist_ok=True)
+        if config is not None:
+            (config_dir / "config.toml").write_text(config)
+        env = {
+            **os.environ,
+            "HERDR_BIN_PATH": str(binary),
+            "HERDR_PLUGIN_CONFIG_DIR": str(config_dir),
+        }
+        env.pop("HERDR_PLUGIN_EVENT_JSON", None)
+        result = subprocess.run(
+            [sys.executable, str(PLUGIN_ROOT / "bin" / "space-marks")],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        calls = (
+            [json.loads(line) for line in log.read_text().splitlines()]
+            if log.exists()
+            else []
+        )
+        return result, calls
+
+    def test_an_unconfigured_run_leaves_reported_icons_alone(self):
+        result, calls = self.run_space_marks(None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call for call in calls if call[:2] == ["workspace", "report-metadata"]], []
+        )
+
+    def test_a_configured_run_reports_the_icon(self):
+        result, calls = self.run_space_marks('[space_icons]\nherdr = "🚀"\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reported = [call for call in calls if call[:2] == ["workspace", "report-metadata"]]
+        self.assertEqual(len(reported), 1)
+        self.assertIn("cobalt2_space=🚀", reported[0])
+
+
 class FakeHerdr:
     """A stand-in `herdr` on PATH that records the calls made to it."""
 
